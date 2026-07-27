@@ -1,0 +1,74 @@
+{
+  "resource_name": "JHU ICBM-DTI-81 White-Matter Labels, historical 48-label variant",
+  "source": {
+    "component": "data_atlases",
+    "tag": "fsl-5_0_4"
+  },
+  "files": {
+    "JHU-ICBM-labels-2mm.nii.gz": {
+      "sha256": "974a0fd72d1214a29e58ccf33cf5aec989d937d999ae65f389dd6b3e1ffdbbad"
+    },
+    "JHU-labels.xml": {
+      "sha256": "2d76ce80d1b0a50dccda2698d5eec55c8984a7f1bb438f79111d67a26fc4dc1c"
+    }
+  },
+  "nonzero_labels": [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+    25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+    37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48
+  ],
+  "nearest_neighbour_only": true,
+  "label_mapping": {
+    "0": "Unclassified",
+    "1": "Middle cerebellar peduncle",
+    "2": "Pontine crossing tract (a part of MCP)",
+    "3": "Genu of corpus callosum",
+    "4": "Body of corpus callosum",
+    "5": "Splenium of corpus callosum",
+    "6": "Fornix (column and body of fornix)",
+    "7": "Corticospinal tract R",
+    "8": "Corticospinal tract L",
+    "9": "Medial lemniscus R",
+    "10": "Medial lemniscus L",
+    "11": "Inferior cerebellar peduncle R",
+    "12": "Inferior cerebellar peduncle L",
+    "13": "Superior cerebellar peduncle R",
+    "14": "Superior cerebellar peduncle L",
+    "15": "Cerebral peduncle R",
+    "16": "Cerebral peduncle L",
+    "17": "Anterior limb of internal capsule R",
+    "18": "Anterior limb of internal capsule L",
+    "19": "Posterior limb of internal capsule R",
+    "20": "Posterior limb of internal capsule L",
+    "21": "Retrolenticular part of internal capsule R",
+    "22": "Retrolenticular part of internal capsule L",
+    "23": "Anterior corona radiata R",
+    "24": "Anterior corona radiata L",
+    "25": "Superior corona radiata R",
+    "26": "Superior corona radiata L",
+    "27": "Posterior corona radiata R",
+    "28": "Posterior corona radiata L",
+    "29": "Posterior thalamic radiation (include optic radiation) R",
+    "30": "Posterior thalamic radiation (include optic radiation) L",
+    "31": "Sagittal stratum (include inferior longitidinal fasciculus and inferior fronto-occipital fasciculus) R",
+    "32": "Sagittal stratum (include inferior longitidinal fasciculus and inferior fronto-occipital fasciculus) L",
+    "33": "External capsule R",
+    "34": "External capsule L",
+    "35": "Cingulum (cingulate gyrus) R",
+    "36": "Cingulum (cingulate gyrus) L",
+    "37": "Cingulum (hippocampus) R",
+    "38": "Cingulum (hippocampus) L",
+    "39": "Fornix (cres) / Stria terminalis (can not be resolved with current resolution) R",
+    "40": "Fornix (cres) / Stria terminalis (can not be resolved with current resolution) L",
+    "41": "Superior longitudinal fasciculus R",
+    "42": "Superior longitudinal fasciculus L",
+    "43": "Superior fronto-occipital fasciculus (could be a part of anterior internal capsule) R",
+    "44": "Superior fronto-occipital fasciculus (could be a part of anterior internal capsule) L",
+    "45": "Uncinate fasciculus R",
+    "46": "Uncinate fasciculus L",
+    "47": "Tapetum R",
+    "48": "Tapetum L"
+  },
+  "historical_mapping_note": "Labels 31 and 32 are Sagittal stratum and include IFOF in their long names. Labels 45 and 46 are Uncinate fasciculus R/L; there are no separate IFOF labels."
+}

@@ -1,0 +1,568 @@
+{
+  "components": {
+    "henrique_helper": {
+      "commit": null,
+      "evidence_limitation": "The source snapshot contains no Git or archive metadata; no commit is asserted.",
+      "files": {
+        "vendor/henrique_helpers/dki_alternative.py": {
+          "sha256": "f046fa5c3bdff397cd44562c40de1c5aad19de591f10d8b13e23de73b6371490"
+        }
+      },
+      "license": "CC-BY-4.0",
+      "modified": false,
+      "notices": {
+        "licenses/HENRIQUE-CC-BY-4.0.txt": "95df2e9564862e51d69683a899b6dcc8218d577057bdf67322880769ff85f29e"
+      },
+      "notice_sources": {
+        "licenses/HENRIQUE-CC-BY-4.0.txt": "https://github.com/RafaelNH/CamCAN-dMRI-study/blob/main/LICENSE"
+      },
+      "source_url": "https://github.com/RafaelNH/CamCAN-dMRI-study",
+      "version": "downloaded main snapshot"
+    },
+    "jhu_48roi": {
+      "commit": null,
+      "evidence_limitation": "The immutable tag and per-file hashes are asserted; no commit is invented.",
+      "files": {
+        "resources/jhu_48roi/JHU-ICBM-labels-2mm.nii.gz": {
+          "sha256": "974a0fd72d1214a29e58ccf33cf5aec989d937d999ae65f389dd6b3e1ffdbbad"
+        },
+        "resources/jhu_48roi/JHU-labels.xml": {
+          "sha256": "2d76ce80d1b0a50dccda2698d5eec55c8984a7f1bb438f79111d67a26fc4dc1c"
+        },
+        "resources/jhu_48roi/provenance.json": {
+          "sha256": "b41c6fe4eabe3b2bb0bbeb0a1ae0fced8d4db97430f9542cb0c96c80bfab7efe"
+        }
+      },
+      "license": "Main FSL non-commercial licence, as stated by the current official JHU atlas licence paragraph.",
+      "modifications": {
+        "filenames": "Atlas and XML bytes are unchanged; package filenames omit historical source suffixes.",
+        "provenance.json": "Package-authored byte/hash and label-map metadata."
+      },
+      "modified": true,
+      "notices": {
+        "licenses/FSL-JHU-LICENSE.md": "216dbf45d7574ce175f5c79145cc1d8eab814b08904b93d00a0696227d4a09a0"
+      },
+      "notice_sources": {
+        "licenses/FSL-JHU-LICENSE.md": "https://git.fmrib.ox.ac.uk/fsl/docs/-/raw/6c338e686f24c9ed9a8ed1ec7b671504d1543d9a/docs/license.md"
+      },
+      "source_url": "https://git.fmrib.ox.ac.uk/fsl/data_atlases/-/tree/fsl-5_0_4",
+      "version": "fsl-5_0_4"
+    },
+    "nifti_matlab": {
+      "commit": "a7d73bf4cca1e1cb5a956a236fb6bd81b57b740e",
+      "files": {
+        "vendor/nifti_matlab/README.txt": {
+          "sha256": "0e5059c62ec430065bf68878ed6fc3ae44eae6f5b935fb8f41b20e849fc0b19d"
+        },
+        "vendor/nifti_matlab/gpl.txt": {
+          "sha256": "b499eddebda05a8859e32b820a64577d91f1de2b52efa2a1575a2cb4000bc259"
+        },
+        "vendor/nifti_matlab/license.txt": {
+          "sha256": "ba4eeab8eaf6c549aa5fc9b90505e5cb75f956154bead94f3aa5eefc6ffb6555"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/src/README": {
+          "sha256": "5fe21b6c820f5ec4c5cd317b0adeb28ac12bcd6467c437c05e2de3214d65c019"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/src/file2mat.c": {
+          "sha256": "7bd27c31a1ace6254c9aa0df148735c4dd40f01998746dcd8748fc8acedcce2a"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/src/mat2file.c": {
+          "sha256": "ec957608e6b2a809e0574057698bf91bee693d2a8129d8ec491c3b8136d375e4"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/spm_existfile.m": {
+          "sha256": "13ca88e1d3f756649e683c454fd2e02a8e11b6d387f59aba0da1c4250f0e1487"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/spm_fileparts.m": {
+          "sha256": "a212a2baa1ff109ce96d88e57fb991803c2df35a88735100fefa602b51b06b2c"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/src/README": {
+          "sha256": "36c58575276d2c0501adaad77df5baaed14d5f2efd4d5f1924ade4f388000fd9"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/src/nifti1.h": {
+          "sha256": "7ff934e9944dd2eed1603afbd6560a7a51371d9b2f95d66acb32b0c2d983e9e7"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/src/nifti_stats.c": {
+          "sha256": "b709fb007f409b181029112c4bd806e0d21c0650fef6d9f6f8bb552d8665ab74"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/src/nifti_stats_mex.c": {
+          "sha256": "e71e8b5b3b0694cfa68a6e364aa0e2ab4afc6c0698e75162b1801a311476e367"
+        },
+        "vendor/nifti_matlab/matlab/Makefile": {
+          "sha256": "701a888d15c398a433598ce6e275d32dc85e964bf935fbc6f70c53aeef068f8a"
+        }
+      },
+      "license": "GPL-2.0-or-later under the bundled nifti_matlab notice for the ten enumerated legacy runtime files and top-level distribution notices.",
+      "modifications": {
+        "matlab/make.m": "Excluded because it is neither notice-enumerated nor present in the exact SPM12 r7487 comparison; runtime does not call it.",
+        "precompiled_mex": "Excluded; recipient-native MEX files are compiled after extraction."
+      },
+      "modified": true,
+      "notices": {
+        "licenses/GPL-2.0.txt": "b499eddebda05a8859e32b820a64577d91f1de2b52efa2a1575a2cb4000bc259",
+        "licenses/NIFTI-MATLAB-LICENSE.txt": "ba4eeab8eaf6c549aa5fc9b90505e5cb75f956154bead94f3aa5eefc6ffb6555"
+      },
+      "notice_sources": {
+        "licenses/GPL-2.0.txt": "https://github.com/NIFTI-Imaging/nifti_matlab/blob/a7d73bf4cca1e1cb5a956a236fb6bd81b57b740e/gpl.txt",
+        "licenses/NIFTI-MATLAB-LICENSE.txt": "https://github.com/NIFTI-Imaging/nifti_matlab/blob/a7d73bf4cca1e1cb5a956a236fb6bd81b57b740e/license.txt"
+      },
+      "retained_vendor_tree_sha256": "eb5d50ff19e20bc51c1c9dcb03d8656682ef0d6f211a8ca64c6dd0896af0b9a5",
+      "source_archive_sha256": "41ee41b12c826191ecf51c8424789d81bc34f562996f924626ed61e8d620f9ae",
+      "source_url": "https://github.com/NIFTI-Imaging/nifti_matlab/archive/refs/heads/master.zip",
+      "version": "master archive snapshot"
+    },
+    "noddi_v1_05": {
+      "commit": null,
+      "evidence_limitation": "The historical NITRC download requires interactive access; the retained local snapshot supplies version and byte evidence, but no archive hash or commit is asserted.",
+      "files": {
+        "scripts/matlab/CreateROI.m": {
+          "sha256": "56ba345894ec05ab8e0da94e2e14db4690ed9dd642ef05115e3864e78a78eb15"
+        },
+        "vendor/noddi_toolbox_v1.05/LICENSE.txt": {
+          "sha256": "395132693d689b2944785b662935ebc6a6d6f3ffc52ef0faa9e8897dfc7957ef"
+        },
+        "vendor/noddi_toolbox_v1.05/VERSION": {
+          "sha256": "2f43155cfbb5c56e956aa98ea43b3201cdffe60bae83726e0ffedc7c0d5bb865"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/CreateROI.m": {
+          "sha256": "ff6c155e0a4abb6963be61d83af3e961123c553c08e5a5a6f445f8216fa499b0"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/DT_DesignMatrix.m": {
+          "sha256": "2baa0ce6f4cafb66bcc0c70b6e4c752a2bdb371cdbc86324a3d52ffcdd89de41"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/EstimateSigma.m": {
+          "sha256": "1486989a36b8059f8b7b2c964bf015f4c7100e01b990567836c634ff846fca9f"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/FSL2Protocol.m": {
+          "sha256": "3444bb7e93d46a88cda0be0c34537cdc89002c1b6173e1edcc9a20d990a0bad9"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/FitLinearDT.m": {
+          "sha256": "acca7748ee925d5511d1a91d582252406679853ed26c776a8a00cff27bfcf7b9"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/GetSearchGrid.m": {
+          "sha256": "b5589076c07282249a68c18fd13f520804a45f385784c57021a08936446343c3"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/GradDescDecode.m": {
+          "sha256": "4087d6dd251e0974e6eb5c26d8a45c4ee43ca1d7adfcd00a9ac79d89e46040d7"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/GradDescEncode.m": {
+          "sha256": "88cf158d0900b5e23d10337106f68c08e9755c3859dcf9365c98854a80a9c915"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/GradDescLimits.m": {
+          "sha256": "eda600ba4fe12735b09cf435a9bdcf0ce98f21428a5783ccc5dfa3a34e6c60d2"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/GridSearchRician.m": {
+          "sha256": "1294fd46f825f1cef8dde7092d3163bbf7104165e9b27bbbadca70e4dbd95545"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/PlotFittedModel.m": {
+          "sha256": "01379ecb8c9e3d410b7a5cd2af71b6e5dc84f35f780581ad145dc304bf35f305"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/QualityOfFit.m": {
+          "sha256": "3d872016d429c6009b1401197ac1022ed3c0795e4c7b5da33168941f91477986"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/RemoveNegMeas.m": {
+          "sha256": "e6819cafd516dc89448f7fd1e466f65a409d0e1f9a58ea40289748c69826dcf3"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/SaveAsNIfTI.m": {
+          "sha256": "4125f68afc67d8d53c0c4c784eb9b973428c9891062ab2f6bbfe4b82bb3ae0ab"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/SaveParamsAsNIfTI.m": {
+          "sha256": "3565574b2df382f77878a7c05148ea9b4e578585d62217e02c8ecdc4704719d9"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/SchemeToProtocol.m": {
+          "sha256": "382aca4b80324e408fc7e820acd0becc8085b6947b8482542676c15056a02d37"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/ThreeStageFittingVoxel.m": {
+          "sha256": "5ed8386be63020787cc5e9c83208178bca7ec868d09791deb85de046ddce3196"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/VoxelDataViewer.m": {
+          "sha256": "4ecab9a7b377a82c0ca636a6d42ac724cd2dfcdce8560352970e3a45a73d10b3"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/batch_fitting.m": {
+          "sha256": "23227da5c3bdc108fff540626a73862efed83aef2758fcfd47faab658f348157"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/batch_fitting_single.m": {
+          "sha256": "56030edd2b9a7fdf399360339161b9e7d0f155a70917b633a74d14465e5c28d6"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/fmincon_fix.m": {
+          "sha256": "0c7512f1bf7d642f3d46e05210fdac29e9b713647627e493b2ad7c4cc56d5a0a"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/fobj_rician.m": {
+          "sha256": "49837ccc9c72a9d2bc9eab8f2e9e052ea57e28d5b34912e5fb74a7a5f7eb2729"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/fobj_rician_fix.m": {
+          "sha256": "b301602b75c61cf3a9260676bfd8529914b19bf9888374988d7aca78eb4d9689"
+        },
+        "vendor/noddi_toolbox_v1.05/fitting/fobj_rician_st.m": {
+          "sha256": "64fb0aadd927ba6068197aa17fa4d7faea93f0bc7a716186d8f6ff13d6b3c02e"
+        },
+        "vendor/noddi_toolbox_v1.05/models/BesselJ_RootsCyl.m": {
+          "sha256": "48cabd02b0144ade8f6d662662a104d6fc5b0f588d9fb4452a97a4ff80809670"
+        },
+        "vendor/noddi_toolbox_v1.05/models/CylNeumanLePar_PGSE.m": {
+          "sha256": "1bce214a262fa55e537b06ffafd270630a2bfa08439fa51a3f08b8db42a19349"
+        },
+        "vendor/noddi_toolbox_v1.05/models/CylNeumanLePerp_PGSE.m": {
+          "sha256": "f2026e60a4e8355dcdf458beb69ab5e21e12a4147d523d6107c859228cb1bc22"
+        },
+        "vendor/noddi_toolbox_v1.05/models/GetB0.m": {
+          "sha256": "7bdb0212e13496a7d83e13a2e579be523595a385e95288c6a5ba2217fac452da"
+        },
+        "vendor/noddi_toolbox_v1.05/models/GetB_Values.m": {
+          "sha256": "1849298820979767756c173d94624b5e99443b4d5337b3b7e87b567a604872d2"
+        },
+        "vendor/noddi_toolbox_v1.05/models/GetFibreOrientation.m": {
+          "sha256": "57987d1d4d889b33f9a1a597e5cd981e533e949b540e05d2a25ca1b13fb09651"
+        },
+        "vendor/noddi_toolbox_v1.05/models/GetParameterIndex.m": {
+          "sha256": "134c1d90d20cf020bfeaaecce5825243ff07f5610c7b685a3330a0826ae757e0"
+        },
+        "vendor/noddi_toolbox_v1.05/models/GetParameterStrings.m": {
+          "sha256": "7dce78482acc7eed9675ae1dc408b855b9940608d29a4bc015ce8687c16eeaec"
+        },
+        "vendor/noddi_toolbox_v1.05/models/GetScalingFactors.m": {
+          "sha256": "a3135df6a6d515f4d8dbcb0ea0de0252f914e50cfb924bd2988190c7921c9715"
+        },
+        "vendor/noddi_toolbox_v1.05/models/MakeDT_Matrix.m": {
+          "sha256": "4ed5f1e5e0c5ec8d5edec790b06ae96528fd68b79f561df6b63ef538582d5297"
+        },
+        "vendor/noddi_toolbox_v1.05/models/MakeModel.m": {
+          "sha256": "ee398e63e37fac180b14e490e54bdd870f8bd22dc0166b0f357dab8e81bdeed2"
+        },
+        "vendor/noddi_toolbox_v1.05/models/NumFreeParams.m": {
+          "sha256": "06ee18f2eaa39296d1f602c310ac5c330465bd1692fa19aa169782a7690365c5"
+        },
+        "vendor/noddi_toolbox_v1.05/models/RicianLogLik.m": {
+          "sha256": "ec35a6db0bf44866d89328aece7403ca380955e8bdb03ee7495a950c8c777f04"
+        },
+        "vendor/noddi_toolbox_v1.05/models/SynthMeas.m": {
+          "sha256": "7a0d72b7451ade14b3f294b417323a1944d254f22d94ad7efd8b74db817ca08f"
+        },
+        "vendor/noddi_toolbox_v1.05/models/SynthMeasHinderedDiffusion_PGSE.m": {
+          "sha256": "01bbacfefc70cbc7514610936cd3b0cd7e39dc2cfd33323fdd52382b12da85c6"
+        },
+        "vendor/noddi_toolbox_v1.05/models/SynthMeasIsoGPD.m": {
+          "sha256": "a1f1da51eab7cb54f680e61f885192dd4abcbb21a102044ec358511ca3b6b701"
+        },
+        "vendor/noddi_toolbox_v1.05/models/logbesseli0.m": {
+          "sha256": "c073940820647f9e16559ec4708bea8dd535f19fb29e9bed6be8e85c127d3a7b"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/LegendreGaussianIntegral.m": {
+          "sha256": "cc0ebb3e924390b8056d6ce20428c96b2b3d0c9e5edb51a90f3c125ec37950f9"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/NODDI_erfi.m": {
+          "sha256": "c141deb753df9f4b786b07529ce0228fc8ae7b1c1dd0642cdcd139d3a331f9be"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonHinderedDiffusion_PGSE.m": {
+          "sha256": "6b8d99669ea0a49518ae4a158d140674635ba069903c303931bd7572b1769afc"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylNeuman_PGSE.m": {
+          "sha256": "998ddc253760980a2118a1bc4ad79b51f06a00aeabeca7de5e756bcb7ae5ef0f"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadGPD.m": {
+          "sha256": "91eeb0663e5789ab95840908b3dae2e36d60a595699b571fd652345d3254c764"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadGPD_PGSE.m": {
+          "sha256": "374cdf5ceaddd314f47a4fe94f6ad9df13f73dd516ac159928019d2be42d7613"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadIsoVIsoDot_GPD.m": {
+          "sha256": "5ed8ee3ece8f52296f7f1cf858bcbd0ec8b7c8e5f8b77dffb85a8ee883ed7cba"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadIsoVIsoDot_GPD_B0.m": {
+          "sha256": "72ed22643a411e2f291f9d0ecd46b42767881aa5d6c014cdf9dc14fc890b5652"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadIsoV_GPD.m": {
+          "sha256": "5afb05485c7bad384c377645a870ae0623457fb3bb7a7ee46b786225c803ec26"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadIsoV_GPD_B0.m": {
+          "sha256": "6a27d8595470ff14d549291a67b3ff62ea15db30df7566841ebb1dbd3735a5c3"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadTortGPD.m": {
+          "sha256": "1706b6f80aab482fbd54130f3f6ecfee9128d079eb20e769e8511e57512ba978"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadTortIsoVIsoDot_GPD.m": {
+          "sha256": "7aaa75151029e9ed55200f75dc6db8e7b69cd1f1527c9cab39a1543909fe45a9"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadTortIsoVIsoDot_GPD_B0.m": {
+          "sha256": "811745b5ec14cb3036bca565b12af04986f96458f3698403faf2e528a2e6e476"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadTortIsoV_GPD.m": {
+          "sha256": "dc7260b6ac7e4c410a68c0db6e444ab4be56b1ab9f351c4ba17500a8dc3a6b7a"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHCylSingleRadTortIsoV_GPD_B0.m": {
+          "sha256": "eeea11ae933a705ea42fb7d26340ce44c9f96308089f00684085323b0be1cb14"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHStickIsoVIsoDot_B0.m": {
+          "sha256": "3fa902cafa0babf33e3f15d32aa1fc3cf4db4cf8f7c4462a5560fc06c2026fbf"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHStickIsoV_B0.m": {
+          "sha256": "fc50485ae591ece41fcde56abf39bf5c4885062649541b1f824a4248a74d92dc"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHStickTortIsoVIsoDot_B0.m": {
+          "sha256": "39ba828b21391205c0776508120a6308a2378ca933a61d976ded61a34a4e7f74"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/SynthMeasWatsonSHStickTortIsoV_B0.m": {
+          "sha256": "3b6f43438cb01964470fd4fb0ca1ecd00b4d0a263be8b11eb495973369a2fe05"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/WatsonHinderedDiffusionCoeff.m": {
+          "sha256": "cb4b283a3db2c965f084c32feeb42cb71e83523b3f7f322ceb617efa5ff4d56d"
+        },
+        "vendor/noddi_toolbox_v1.05/models/watson/WatsonSHCoeff.m": {
+          "sha256": "16e6f8fc584cd62cc34ef4c6fc24b775293a20d3c5950f0170e1d999862e89b6"
+        }
+      },
+      "license": "Artistic-2.0 for the retained upstream NODDI files; the package-authored NODDI_erfi.m is explicitly outside that claim.",
+      "modifications": {
+        "NODDI_erfi.m": "Package-authored clean-room implementation of the public mathematical definition; not File Exchange submission 18238 and no project-wide licence grant is asserted.",
+        "scripts/matlab/CreateROI.m": "Package compatibility rewrite; not represented as an upstream-original NODDI file."
+      },
+      "modified": true,
+      "notices": {
+        "licenses/ARTISTIC-2.0.txt": "f906736d3e8ad2237e8ff6ea0c8e41ae51ce4c5b1e0727ee25334c22b3de5b85",
+        "licenses/NODDI-LICENSE.txt": "395132693d689b2944785b662935ebc6a6d6f3ffc52ef0faa9e8897dfc7957ef"
+      },
+      "notice_sources": {
+        "licenses/ARTISTIC-2.0.txt": "https://lists.opensource.org/pipermail/license-discuss_lists.opensource.org/attachments/20070313/95fda3fd/attachment.txt",
+        "licenses/NODDI-LICENSE.txt": "https://www.nitrc.org/frs/download.php/12229/NODDI_toolbox_v1.05.zip"
+      },
+      "retained_vendor_tree_sha256": "4185352f6c22274128b72d35dc23fe947907e61f57dc4b8eacb380046a9bd3ea",
+      "source_archive_sha256": null,
+      "source_url": "https://www.nitrc.org/frs/download.php/12229/NODDI_toolbox_v1.05.zip",
+      "version": "1.05 (WUZI r1032)"
+    },
+    "spm12_r7487_nifti_runtime": {
+      "classification": "Exactly 72 retained runtime files independently verified byte-identical to official tag r7487.",
+      "commit": "50b4fd3bf376f062965b5e1b20ab29af4aa1e6f3",
+      "evidence_limitation": null,
+      "files": {
+        "vendor/nifti_matlab/matlab/@file_array/Contents.m": {
+          "sha256": "fded8c4c5bfab43c5e8e8c70d5b675171cfb24cc62ecd859ed7cbdcdfb95f882"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/cat.m": {
+          "sha256": "46c8ce352fd1c5fb13dccba7cdb618988af521f6ef2fbc818dfb9526506c4579"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/ctranspose.m": {
+          "sha256": "1ec13a0407cf241a0590083cdc239b94fd0e294ddf7d1d3758b93b37025b5793"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/disp.m": {
+          "sha256": "0c473102a357605a2dd4ddf52b5a4e0fde09e7befc4698880f54cd8443885df4"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/display.m": {
+          "sha256": "d280865c3437199d51972b2e24d5fa1ddb60c0dd022fa66d9bd134d89782b9bf"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/double.m": {
+          "sha256": "73d8f08a35e098fe8fc38e5a2e0129e421ac9d840c5c77007eebdcf2224155a7"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/end.m": {
+          "sha256": "9fd8cbbdcf5f5ded1427527cd34b8870e7f2f7bf0df3bb5c1215e2abb7d99f35"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/fieldnames.m": {
+          "sha256": "6ee71c3def9fd256719e8cdc0c860a7746a9bc1bbfcc7652e1ce37ee5180b0c5"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/file_array.m": {
+          "sha256": "043199453ec22b05ce9bbd319161b0f60b5da83536f8103c9616af1f110d7e81"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/horzcat.m": {
+          "sha256": "20a7fbc45b6220dd286c576683fcbf3e04ff5b98a4eae14c16fba19fd051575b"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/initialise.m": {
+          "sha256": "249e80f6fffc5f9693ca1c029b89e867359320ee971c11946389528a3028e929"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/isnan.m": {
+          "sha256": "7c6c56d124049dbcb1a8e96ce8677ba545e6968e827057018fb9fc664c80620d"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/length.m": {
+          "sha256": "25cdd377080341cc07036bb9013145cf907bb47c592efa75e7020072fa961f31"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/loadobj.m": {
+          "sha256": "0644f02ab1d7ed810822fce0c90b3d980b7b38be39c87c4f0e0a70f05b0d61b7"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/ndims.m": {
+          "sha256": "f5c184e29119965c76b465450052efe3a31b114b797c8fcdb7a65570c1333f83"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/numel.m": {
+          "sha256": "fa5508f204b16b9a5761aeb442edaf7226e3919cf2725e2e284bd54a0f79cb54"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/numeric.m": {
+          "sha256": "540bd0d476bac930ae118e542b6a068b78bea116be5b675863a569e63a55715a"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/permute.m": {
+          "sha256": "fb2acd4e7f7126fe3e0df72dadc808aeacfedcc3cfd216d7b058c359d0580f99"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/Makefile": {
+          "sha256": "c1c829349ded1fb2542192017188d4718e7e52e5168d06d2b5bfb0ad1d989312"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/datatypes.m": {
+          "sha256": "afd0d32990ba393347a671636ec12c3c90b466905cb89938a68ab9ec168300e0"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/dim.m": {
+          "sha256": "e935b047dd278d9173f8cf43827beb171652a2451d59ac5751e2372f22b8b2c7"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/dtype.m": {
+          "sha256": "c620787efda2946761977b5349168ac95c0e44ad25859eaf5c35fc7bc28cb28e"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/file2mat.c": {
+          "sha256": "19dbab50304d758b368d37d2764789d2b379e2dc78320222655e27a9d22bd1f8"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/file2mat.m": {
+          "sha256": "9a17e53130fe69aa4362a8ca37b1f60f0ad4366a4dd078733eab0e2fa3e74e77"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/fname.m": {
+          "sha256": "9aaf8480c5356b3cc4d33ef4c73ac53651c562c36e68a68b24d982466fa434c2"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/init.c": {
+          "sha256": "56a6e355de5e03b9b0a2841d8eb54722cb7e4e07616f2ccf4ea673653a4a5e37"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/init.m": {
+          "sha256": "23dd5defbeceda9b15d3e932813f5d036f703822bbe0b719557e5befd1990ae9"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/mat2file.c": {
+          "sha256": "ad28ff9a3c901ee6e0ca42fc4e38e7df651052becdbbf9d865e9893248b55ffb"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/mat2file.m": {
+          "sha256": "f3cd01833c8e866795893ac2cfc35d83b37ae8fefa11a8f7f817e4d169a08805"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/mystruct.m": {
+          "sha256": "83dfc4cbb1210f77d526d70d218aaa5b12b002e43b08b7af5d20eb2071bf7766"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/offset.m": {
+          "sha256": "8d7f23d5d7e75136b25af7bd7862c1a0289c0ace36718a4e120d0d3a4b2c7897"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/permission.m": {
+          "sha256": "2e5d51f19f07674b5a9cfa37678e4c219a622c9fed71a3277a92b72156f8c1fe"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/resize_scales.m": {
+          "sha256": "e024cf211861da91f4eb5c7a641d0253618721f23f3593977151c6466c13d1d5"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/scl_inter.m": {
+          "sha256": "64776811c0d5384d90fbc83e3bc10ba278e654f9d59608f19dc2a67085060eef"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/private/scl_slope.m": {
+          "sha256": "53c8fd2ed31392d704a7aa5a458c7c7eba33da2be9d6b5bb4f8846a0427e9842"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/reshape.m": {
+          "sha256": "a8a2bec1b966d8cfb00b5d27e662632950ca397f9ce9095f31fa6b84606ca4b6"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/size.m": {
+          "sha256": "ada1b85259fc23e5235c6cf35572d0c1d7245e9a201d87b271180db0a3f103de"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/subsasgn.m": {
+          "sha256": "a98074db12abe57a930b62944a1a55cbed1d1f6d4312c5760ad9ec7ac25d64fb"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/subsref.m": {
+          "sha256": "ec85f96677b18a03e4e79d4405c00eb497832af6e6a75457d132e44b2c41dccb"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/transpose.m": {
+          "sha256": "32c90da7200841d63fefa816caade984191b4aa4886ddb82b9f339320a0421eb"
+        },
+        "vendor/nifti_matlab/matlab/@file_array/vertcat.m": {
+          "sha256": "539783a299322ca3d53e340ca8e16254fadc9c2b1829cca6a04060688a0b199b"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/Contents.m": {
+          "sha256": "4f48604b5c753946ec175b27a30ae7cd1a3db05b77965a912b7e77f88d810eaf"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/create.m": {
+          "sha256": "2813329ea4decd6e44998719a9ee4f503f91a4ea3e8924f8cc4f71c32bc5bc9f"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/disp.m": {
+          "sha256": "3f67b55e7cce1cb8acf2ee705a66d5fb265bf656be0d50123be6d7f026a64287"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/display.m": {
+          "sha256": "ff8d3a526075bd8699e21fabed1d7bacc3b0c5e9bcc2b27ef6787b8de98ace38"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/fieldnames.m": {
+          "sha256": "039ec422dc96cc8220691f76950017cde170d345ab165cb3db3c4753b10cc8c6"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/nifti.m": {
+          "sha256": "865aad30bc71ad497ee8dca78f96a57689cd7bc8aec0c635a14aa7d11d49c99f"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/M2Q.m": {
+          "sha256": "e0e7be7848bd774514b2886d5f72b5286922aca968c59e8e806983bb2edcd0ea"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/Q2M.m": {
+          "sha256": "85cc4f2c2f5253ebc2c5a372074632a054bed2c349ca037f4afe0eb253f3a3a0"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/decode_qform0.m": {
+          "sha256": "017f6a6968476cabc224f957ff9c77c9dac2b5bf8fbafe817c967517a624502d"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/empty_hdr.m": {
+          "sha256": "1522133940f55eac55c1a78d5a23161c7d67a24cbfa4e74e737cf7b8acfdff25"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/encode_qform0.m": {
+          "sha256": "a4d8279806c96b61563d38e4e9658033640f478e4b85d7bec46b06ddb886e376"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/findindict.m": {
+          "sha256": "1867c1db0bf845b3d6e4d3e480ecb1a05a674d40f61445a74d5de0b9c3cf2c6f"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/getdict.m": {
+          "sha256": "5e8949f187bf581ecda7556bc0475c5a79c55b910574158a3170b7103ed99fa7"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/mayo2nifti1.m": {
+          "sha256": "bead94e4a2e7fdf786c6a57d29e914a08e25e355ebd33511e8d47403ac73cd30"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/mayostruc.m": {
+          "sha256": "5afdc5256471d709e7acf1b780aff32379efd5334cebe26da6478bec9bb4c964"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/nifti1.h": {
+          "sha256": "c8f81f1f1234d560345693c1db00dc4bf6505ed8f0b99259b5a0854340b7d19c"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/nifti1struc.m": {
+          "sha256": "b4020413ef8c0efcc2753022499372a799c9a6598d7440300cfe2e88a83a5acb"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/nifti2struc.m": {
+          "sha256": "d3bed21c6bcf60a2676b32058739e7f6003b40f046cf012696306ce80ed4ac92"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/nifti_stats.c": {
+          "sha256": "63f814c6c1f92c38c74854908ff2a9502b13c06f90f49e7a005a2509b58f13a6"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/nifti_stats.m": {
+          "sha256": "e0016c77f75e65bc1c3a94be5d1ebfeeb045e8dcca65c0b6f64fc6a3a97e767c"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/nifti_stats_mex.c": {
+          "sha256": "647a67e2bfed7ca4f02bc795ec83015b8e09fd378ee6b848cde4c7a4b3707a36"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/niftistruc.m": {
+          "sha256": "20188e7f58859cc3f614cc5d32aea43cd008edda0b64773a5b09585b7c0d1ef9"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/read_extras.m": {
+          "sha256": "dbdbd7e8d49542e5d9a64ead014b927d539419985185b7802cbf45a34bf4e483"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/read_hdr.m": {
+          "sha256": "9a3a01c8437940b6903e23bf887f28198f69f46d665f29c9a157efb32a7fce53"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/read_hdr_raw.m": {
+          "sha256": "10be1f0069a0b89201fc781cc655bfdd92163f2dff46cb6bf6efcb1b4bdcd933"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/write_extras.m": {
+          "sha256": "d2cd2cc917fd0613fa3d831567f2cbb682b1858f42f12c75feed076c20a57cd6"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/private/write_hdr_raw.m": {
+          "sha256": "6c2b6ac4e6c30f8e8de414d72b8ffe4d39c55406e4388bf53b16019f34c2e852"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/structn.m": {
+          "sha256": "e8944c7b28c027f4dcf6a0fd887d666300ccfbf85cfcd7120d0e335ccf7e2959"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/subsasgn.m": {
+          "sha256": "633082e8b6f3bf588430dda808b8ce37fe0015fec707edd545cb9c5f425211db"
+        },
+        "vendor/nifti_matlab/matlab/@nifti/subsref.m": {
+          "sha256": "446c3547f76b9a4eb0551b18eba092bcb0ee4ae51ae26730200da87d883af6b6"
+        },
+        "vendor/nifti_matlab/matlab/spm_flip_analyze_images.m": {
+          "sha256": "e38fa89a0b345b47bc42ed49c45c22344f3257086f3b6c05a842b2eff284696b"
+        }
+      },
+      "license": "GPL-2.0-or-later",
+      "modified": false,
+      "notices": {
+        "licenses/SPM12-r7487-LICENCE.txt": "3cf9e20bb94f096bdb402da29e3d5b690dacaf4274c4bf606f5a43b26c108670"
+      },
+      "notice_sources": {
+        "licenses/SPM12-r7487-LICENCE.txt": "https://github.com/spm/spm12/blob/50b4fd3bf376f062965b5e1b20ab29af4aa1e6f3/LICENCE.txt"
+      },
+      "source_url": "https://github.com/spm/spm12/tree/r7487",
+      "version": "r7487"
+    }
+  },
+  "schema_version": 1,
+  "scope": "Third-party and package-authored compatibility material; this is not a project-wide licence grant."
+}

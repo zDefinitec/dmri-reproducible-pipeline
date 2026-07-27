@@ -1,0 +1,13 @@
+name: dmri-repro
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy=2.4.6
+  - scipy=1.17.1
+  - nibabel=5.4.2
+  - dipy=1.12.1
+  - matplotlib=3.11.1
+  - pandas=3.0.3
+  - pyyaml=6.0.2
+  - h5py=3.16.0

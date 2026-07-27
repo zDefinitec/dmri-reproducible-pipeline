@@ -1,0 +1,24 @@
+subject_id: SUBJECT_ID
+
+inputs:
+  dwi_pa: inputs/pa_dwi.nii.gz
+  bvals: inputs/pa_dwi.bval
+  bvecs: inputs/pa_dwi.bvec
+  b0_ap: inputs/ap_b0.nii.gz
+
+output_root: ../outputs
+
+acquisition:
+  pa_vector: [0, -1, 0]
+  ap_vector: [0, 1, 0]
+  total_readout_time: REPLACE_WITH_SCANNER_VALUE_SECONDS
+  slice_axis: 2
+
+analysis:
+  dti_max_b: 1200.0
+  noddi_workers: auto
+  ambiguous_qc_reviewed: false
+
+tools:
+  fsldir: null
+  matlab_executable: null

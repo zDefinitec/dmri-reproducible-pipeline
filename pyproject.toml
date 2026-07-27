@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dmri-reproducible-pipeline"
+version = "1.0.0"
+description = "Patient-free, reproducible macOS diffusion MRI pipeline"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy==2.4.6",
+    "scipy==1.17.1",
+    "nibabel==5.4.2",
+    "dipy==1.12.1",
+    "matplotlib==3.11.1",
+    "pandas==3.0.3",
+    "PyYAML==6.0.2",
+    "h5py==3.16.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.4,<8.5"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-p no:cacheprovider"
