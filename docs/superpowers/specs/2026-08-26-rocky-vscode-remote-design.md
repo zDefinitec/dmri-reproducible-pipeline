@@ -96,8 +96,10 @@ the package will not continue after only printing a version warning.
   `MemTotal` in `/proc/meminfo`.
 - Discover MATLAB through explicit configuration or the server `PATH`.
   `/Applications/MATLAB_R*.app` discovery is removed.
-- Retain the existing Linux `renameat2` no-replace implementation and remove
-  the Darwin implementation because macOS execution is no longer supported.
+- Retain the existing Linux `renameat2` no-replace implementation. The Darwin
+  filesystem primitive may remain solely so pre-migration unit tests can run
+  from a Mac checkout; the public setup and runtime entry points must still
+  reject macOS, and Darwin is not a supported execution platform.
 - Rename macOS-specific installation documentation and package metadata.
 - Update the package audit executable allowlist, required-document list, and
   wrapper tests for the Rocky filenames.
