@@ -32,7 +32,8 @@ uname -m
 pwd
 ```
 
-`uname -m` must report the supported server architecture. Input paths in
+The server must be Rocky Linux 9.7 on x86_64; confirm both the operating-system
+release and `uname -m` output before proceeding. Input paths in
 `config/subject.yaml` resolve on the Rocky server. Do not copy data to the Mac,
 and do not use SSHFS for bulk MRI computation.
 
@@ -43,12 +44,15 @@ file and run the standard preflight:
 
 ```bash
 export DMRI_SOFTWARE_CONFIG=/absolute/path/to/dmri-rocky9.sh
+source "${DMRI_SOFTWARE_CONFIG}"
 ./setup_rocky.sh --check
 ./run_pipeline.sh --validate-only config/subject.yaml
 ./run_pipeline.sh --dry-run config/subject.yaml
 ```
 
-Then discover the installed server interpreter:
+`setup_rocky.sh` and `run_pipeline.sh` load this configuration only in their
+own subprocesses, so source the private configuration in the interactive
+remote terminal before discovering the installed server interpreter:
 
 ```bash
 "${CONDA_EXE}" run -n dmri-repro which python
