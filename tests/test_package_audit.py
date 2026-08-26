@@ -25,6 +25,7 @@ REQUIRED_DOCUMENTS = (
     "docs/OUTPUTS.md",
     "docs/QC_AND_EXCLUSION.md",
     "docs/TROUBLESHOOTING.md",
+    "docs/REMOTE_VSCODE.md",
 )
 STAGE_ORDER = (
     "00_input_audit",
@@ -575,6 +576,39 @@ def test_required_documentation_covers_the_public_contract() -> None:
         "17 named PNGs",
     ):
         assert filename in outputs, filename
+
+
+def test_vscode_recommendations_are_valid_and_non_secret() -> None:
+    payload = json.loads(
+        (PACKAGE_ROOT / ".vscode" / "extensions.json").read_text(encoding="utf-8")
+    )
+    assert payload == {
+        "recommendations": [
+            "ms-vscode-remote.remote-ssh",
+            "ms-python.python",
+            "ms-python.vscode-pylance",
+        ]
+    }
+    rendered = json.dumps(payload).lower()
+    for forbidden in ("hostname", "identityfile", "password", "/users/", "/home/"):
+        assert forbidden not in rendered
+
+
+def test_remote_vscode_document_keeps_compute_on_server() -> None:
+    text = (PACKAGE_ROOT / "docs" / "REMOTE_VSCODE.md").read_text(
+        encoding="utf-8"
+    ).lower()
+    for required in (
+        "remote - ssh",
+        "ssh dmri-rocky",
+        "open folder",
+        "uname -m",
+        "dmri_software_config",
+        "tmux new -s",
+        "tmux attach",
+        "do not use sshfs",
+    ):
+        assert required in text, required
 
 
 def test_release_metadata_is_rocky_only_and_consistent() -> None:

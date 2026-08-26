@@ -82,6 +82,7 @@ representative subject before scheduling a cohort.
 - [outputs](docs/OUTPUTS.md)
 - [QC and exclusion](docs/QC_AND_EXCLUSION.md)
 - [troubleshooting](docs/TROUBLESHOOTING.md)
+- [VS Code Remote SSH operator workflow](docs/REMOTE_VSCODE.md)
 - [third-party attribution](licenses/THIRD_PARTY_NOTICES.md)
 
 ## Reproducibility limits
