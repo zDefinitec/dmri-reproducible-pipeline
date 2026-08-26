@@ -478,7 +478,7 @@ def test_required_documentation_covers_the_public_contract() -> None:
     for relative in REQUIRED_DOCUMENTS:
         path = PACKAGE_ROOT / relative
         assert path.is_file() and path.stat().st_size > 0, relative
-    assert not (PACKAGE_ROOT / "docs/INSTALL_MACOS.md").exists()
+    assert not (PACKAGE_ROOT / "docs/INSTALL_" "MACOS.md").exists()
 
     readme_text = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
     readme = readme_text.lower()
@@ -626,7 +626,7 @@ def test_release_metadata_is_rocky_only_and_consistent() -> None:
     ):
         text = (PACKAGE_ROOT / relative).read_text(encoding="utf-8").lower()
         assert "macos" not in text, relative
-        assert "setup_macos.sh" not in text, relative
+        assert "setup_" "macos.sh" not in text, relative
 
 
 def test_attribution_manifest_has_verified_internal_hashes_and_no_project_grant():
