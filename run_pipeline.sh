@@ -5,14 +5,19 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="${SCRIPT_DIR}/src"
 
-if [[ -n "${CONDA_EXE:-}" && -x "${CONDA_EXE}" ]]; then
-    CONDA_BIN=${CONDA_EXE}
-elif command -v conda >/dev/null 2>&1; then
-    CONDA_BIN=$(command -v conda)
-else
-    echo "ERROR: Conda/Miniforge is required; conda was not found" >&2
+fail() {
+    echo "ERROR: $*" >&2
     exit 30
-fi
+}
+
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/scripts/rocky_environment.sh"
+check_rocky_platform
+load_software_config
+
+[[ "${CONDA_EXE}" == /* && -x "${CONDA_EXE}" ]] \
+    || fail "configured CONDA_EXE must be an absolute executable path"
+CONDA_BIN=${CONDA_EXE}
 
 if ! "${CONDA_BIN}" run -n dmri-repro python -c 'import sys' \
     >/dev/null 2>&1

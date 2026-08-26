@@ -11,31 +11,23 @@ export PIP_NO_CACHE_DIR=1
 
 fail() {
     echo "FAIL: $*" >&2
-    return 1
+    exit 30
 }
 
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/scripts/rocky_environment.sh"
+check_rocky_platform
+load_software_config
+
 find_conda() {
-    if [[ -n "${CONDA_EXE:-}" && -x "${CONDA_EXE}" ]]; then
-        printf '%s\n' "${CONDA_EXE}"
-    elif command -v conda >/dev/null 2>&1; then
-        command -v conda
-    else
-        fail "Conda/Miniforge was not found"
-    fi
+    [[ "${CONDA_EXE}" == /* && -x "${CONDA_EXE}" ]] \
+        || fail "configured CONDA_EXE must be an absolute executable path"
+    printf '%s\n' "${CONDA_EXE}"
 }
 
 find_fsldir() {
-    if [[ -n "${FSLDIR:-}" ]]; then
-        printf '%s\n' "${FSLDIR}"
-        return
-    fi
-    local topup_path
-    topup_path=$(command -v topup 2>/dev/null || true)
-    if [[ -z "${topup_path}" ]]; then
-        fail "FSLDIR is unset and topup is not on PATH"
-        return
-    fi
-    (CDPATH= cd -- "$(dirname -- "${topup_path}")/.." && pwd -P)
+    [[ "${FSLDIR}" == /* ]] || fail "configured FSLDIR must be an absolute path"
+    printf '%s\n' "${FSLDIR}"
 }
 
 sha256_file() {
@@ -48,20 +40,8 @@ sha256_file() {
     fi
 }
 
-check_platform() {
-    local os_name architecture
-    os_name=$(uname -s)
-    architecture=$(uname -m)
-    [[ "${os_name}" == "Darwin" ]] || fail "macOS is required; found ${os_name}"
-    case "${architecture}" in
-        arm64|x86_64) ;;
-        *) fail "unsupported macOS CPU architecture: ${architecture}" ;;
-    esac
-    echo "OK: macOS ${architecture}"
-}
-
 check_fsl() {
-    local root command_name
+    local root command_name fsl_version
     root=$(find_fsldir)
     [[ -d "${root}" ]] || fail "FSLDIR is not a directory: ${root}"
     for command_name in \
@@ -86,24 +66,19 @@ check_fsl() {
         [[ -f "${root}/${relative}" ]] \
             || fail "missing required FSL file: ${relative}"
     done
+    [[ -f "${root}/etc/fslversion" ]] \
+        || fail "missing required FSL version file: etc/fslversion"
+    fsl_version=$(head -n 1 "${root}/etc/fslversion")
+    [[ "${fsl_version}" == "${DMRI_EXPECTED_FSL_VERSION}" ]] \
+        || fail "FSL version mismatch: expected ${DMRI_EXPECTED_FSL_VERSION}, found ${fsl_version}"
     echo "OK: FSL tools, configs, and standard FA image"
 }
 
 check_matlab() {
     local matlab_bin probe output matlab_version matlab_mexext
-    if [[ -n "${MATLAB_EXECUTABLE:-}" ]]; then
-        matlab_bin=${MATLAB_EXECUTABLE}
-    else
-        matlab_bin=$(command -v matlab 2>/dev/null || true)
-    fi
-    if [[ -z "${matlab_bin}" ]]; then
-        local candidate
-        candidate=$(find /Applications -maxdepth 1 -name 'MATLAB_R*.app' -print 2>/dev/null \
-            | sort -r | head -n 1 || true)
-        [[ -n "${candidate}" ]] || fail "MATLAB executable was not found"
-        matlab_bin="${candidate}/bin/matlab"
-    fi
-    [[ -x "${matlab_bin}" ]] || fail "MATLAB executable is not executable"
+    matlab_bin=${MATLAB_EXECUTABLE}
+    [[ "${matlab_bin}" == /* && -x "${matlab_bin}" ]] \
+        || fail "configured MATLAB_EXECUTABLE must be an absolute executable path"
     probe="fprintf('__DMRI_MATLAB_VERSION__%s\\n',version);"
     probe+="fprintf('__DMRI_MEXEXT__%s\\n',mexext);"
     probe+="v=ver('optim'); fprintf('__DMRI_OPT_INSTALLED__%d\\n',~isempty(v));"
@@ -127,8 +102,8 @@ check_matlab() {
         || fail "MATLAB capability probe failed"
     grep -q '__DMRI_MATLAB_VERSION__.' <<<"${output}" \
         || fail "MATLAB version probe was empty"
-    grep -Eq '__DMRI_MEXEXT__mex[A-Za-z0-9_]+' <<<"${output}" \
-        || fail "MATLAB mexext probe was invalid"
+    grep -q '__DMRI_MEXEXT__mexa64' <<<"${output}" \
+        || fail "MATLAB mexext must be mexa64"
     grep -q '__DMRI_OPT_INSTALLED__1' <<<"${output}" \
         || fail "MATLAB Optimization Toolbox is not installed"
     grep -q '__DMRI_OPT_LICENSED__1' <<<"${output}" \
@@ -139,6 +114,8 @@ check_matlab() {
         || fail "MATLAB C MEX compiler could not compile, load, and run a temporary probe"
     matlab_version=$(sed -n 's/^__DMRI_MATLAB_VERSION__//p' <<<"${output}" | head -n 1)
     matlab_mexext=$(sed -n 's/^__DMRI_MEXEXT__//p' <<<"${output}" | head -n 1)
+    [[ "${matlab_version}" == "${DMRI_EXPECTED_MATLAB_VERSION}" ]] \
+        || fail "MATLAB version mismatch: expected ${DMRI_EXPECTED_MATLAB_VERSION}, found ${matlab_version}"
     echo "OK: MATLAB ${matlab_version}, ${matlab_mexext}, Optimization Toolbox, and working C MEX compiler"
 }
 
@@ -181,7 +158,6 @@ check_disk() {
 run_checks() {
     find_conda >/dev/null
     echo "OK: Conda/Miniforge"
-    check_platform
     check_fsl
     check_matlab
     check_python
@@ -190,7 +166,7 @@ run_checks() {
 }
 
 usage() {
-    echo "Usage: ./setup_macos.sh [--check]" >&2
+    echo "Usage: ./setup_rocky.sh [--check]" >&2
 }
 
 case "${1:-}" in
