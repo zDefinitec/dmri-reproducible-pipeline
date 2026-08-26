@@ -346,6 +346,59 @@ def test_setup_check_fails_when_mex_cannot_compile_and_run(
     assert "compile" in result.stderr.lower() or "MEX" in result.stderr
 
 
+def test_setup_rejects_rocky_id_and_version_with_a_non_rocky_name(
+    tmp_path: Path,
+) -> None:
+    environment, _ = _setup_check_environment(tmp_path)
+    release = tmp_path / "os-release"
+    release.write_text(
+        'NAME="Rocky-like Linux"\nID="rocky"\nVERSION_ID="9.7"\n',
+        encoding="utf-8",
+    )
+    environment["DMRI_OS_RELEASE_FILE"] = str(release)
+
+    result = subprocess.run(
+        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 30
+    assert "Rocky Linux 9.7" in result.stderr
+
+
+def test_setup_rejects_mexext_with_mexa64_prefix(tmp_path: Path) -> None:
+    environment, _ = _setup_check_environment(tmp_path)
+    matlab = Path(environment["PATH"].split(":", 1)[0]) / "matlab"
+    matlab.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' "
+        "'__DMRI_MATLAB_VERSION__25.1' "
+        "'__DMRI_MEXEXT__mexa64-invalid' "
+        "'__DMRI_OPT_INSTALLED__1' "
+        "'__DMRI_OPT_LICENSED__1' "
+        "'__DMRI_MEX_CONFIGURED__1' "
+        "'__DMRI_MEX_WORKS__1'\n",
+        encoding="utf-8",
+    )
+    matlab.chmod(0o755)
+
+    result = subprocess.run(
+        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 30
+    assert "mexa64" in result.stderr
+
+
 def test_run_wrapper_requires_absolute_readable_software_config(tmp_path: Path) -> None:
     environment, _ = _setup_check_environment(tmp_path)
     environment.pop("DMRI_SOFTWARE_CONFIG", None)

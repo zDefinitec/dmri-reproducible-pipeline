@@ -37,13 +37,15 @@ os_release_value() {
 
 check_rocky_platform() {
     local release_file=${DMRI_OS_RELEASE_FILE:-/etc/os-release}
-    local os_name architecture os_id version_id
+    local os_name architecture distribution_name os_id version_id
     [[ -f "${release_file}" ]] || fail "cannot read OS release file: ${release_file}"
     os_name=$(uname -s)
     architecture=$(uname -m)
+    distribution_name=$(os_release_value NAME "${release_file}")
     os_id=$(os_release_value ID "${release_file}")
     version_id=$(os_release_value VERSION_ID "${release_file}")
-    [[ "${os_name}" == "Linux" && "${os_id}" == "rocky" \
+    [[ "${os_name}" == "Linux" && "${distribution_name}" == "Rocky Linux" \
+        && "${os_id}" == "rocky" \
         && "${version_id}" == "9.7" ]] \
         || fail "Rocky Linux 9.7 is required"
     [[ "${architecture}" == "x86_64" ]] \

@@ -100,9 +100,10 @@ check_matlab() {
     probe+="fprintf('__DMRI_MEX_WORKS__%d\\n',mex_works); clear cleanup_dir;"
     output=$("${matlab_bin}" -batch "${probe}" 2>&1) \
         || fail "MATLAB capability probe failed"
-    grep -q '__DMRI_MATLAB_VERSION__.' <<<"${output}" \
-        || fail "MATLAB version probe was empty"
-    grep -q '__DMRI_MEXEXT__mexa64' <<<"${output}" \
+    matlab_version=$(sed -n 's/^__DMRI_MATLAB_VERSION__//p' <<<"${output}" | head -n 1)
+    matlab_mexext=$(sed -n 's/^__DMRI_MEXEXT__//p' <<<"${output}" | head -n 1)
+    [[ -n "${matlab_version}" ]] || fail "MATLAB version probe was empty"
+    [[ "${matlab_mexext}" == "mexa64" ]] \
         || fail "MATLAB mexext must be mexa64"
     grep -q '__DMRI_OPT_INSTALLED__1' <<<"${output}" \
         || fail "MATLAB Optimization Toolbox is not installed"
@@ -112,8 +113,6 @@ check_matlab() {
         || fail "MATLAB C MEX compiler is not configured; run mex -setup C"
     grep -q '__DMRI_MEX_WORKS__1' <<<"${output}" \
         || fail "MATLAB C MEX compiler could not compile, load, and run a temporary probe"
-    matlab_version=$(sed -n 's/^__DMRI_MATLAB_VERSION__//p' <<<"${output}" | head -n 1)
-    matlab_mexext=$(sed -n 's/^__DMRI_MEXEXT__//p' <<<"${output}" | head -n 1)
     [[ "${matlab_version}" == "${DMRI_EXPECTED_MATLAB_VERSION}" ]] \
         || fail "MATLAB version mismatch: expected ${DMRI_EXPECTED_MATLAB_VERSION}, found ${matlab_version}"
     echo "OK: MATLAB ${matlab_version}, ${matlab_mexext}, Optimization Toolbox, and working C MEX compiler"
