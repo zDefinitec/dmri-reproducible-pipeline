@@ -67,7 +67,7 @@ def _installation(executable: Path) -> MATLABInstallation:
     return MATLABInstallation(
         executable=executable,
         version="24.1.0.2537033 (R2024a)",
-        mexext="mexmaca64",
+        mexext="mexa64",
         optimization_toolbox=True,
         mex_configured=True,
     )
@@ -219,7 +219,7 @@ def test_discovery_normalizes_explicit_app_and_parses_probe(
             0,
             stdout=(
                 "__DMRI_MATLAB_VERSION__=24.1.0.2537033 (R2024a)\n"
-                "__DMRI_MEXEXT__=mexmaca64\n"
+                "__DMRI_MEXEXT__=mexa64\n"
                 "__DMRI_OPT_INSTALLED__=1\n"
                 "__DMRI_OPT_LICENSED__=1\n"
                 "__DMRI_MEX_CONFIGURED__=1\n"
@@ -230,7 +230,7 @@ def test_discovery_normalizes_explicit_app_and_parses_probe(
     monkeypatch.setattr("dmri_pipeline.noddi.subprocess.run", fake_run)
     found = discover_matlab(config)
     assert found.executable == executable
-    assert found.mexext == "mexmaca64"
+    assert found.mexext == "mexa64"
     assert len(seen) == 1
     assert os.environ == before
 
@@ -241,12 +241,50 @@ def test_discovery_invalid_explicit_path_does_not_fall_back(tmp_path, monkeypatc
         discover_matlab(_config(tmp_path, tmp_path / "missing.app"))
 
 
+def test_discovery_uses_matlab_executable_environment_before_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = _executable(tmp_path / "MATLAB" / "R2025a" / "bin" / "matlab")
+    monkeypatch.setenv("MATLAB_EXECUTABLE", str(executable))
+    monkeypatch.setattr(
+        "dmri_pipeline.noddi.shutil.which",
+        lambda name: (_ for _ in ()).throw(AssertionError(name)),
+    )
+    monkeypatch.setattr(
+        "dmri_pipeline.noddi.subprocess.run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=(
+                "__DMRI_MATLAB_VERSION__=25.1\n"
+                "__DMRI_MEXEXT__=mexa64\n"
+                "__DMRI_OPT_INSTALLED__=1\n"
+                "__DMRI_OPT_LICENSED__=1\n"
+                "__DMRI_MEX_CONFIGURED__=1\n"
+            ),
+            stderr="",
+        ),
+    )
+
+    assert discover_matlab(_config(tmp_path)).executable == executable.resolve()
+
+
+def test_invalid_matlab_environment_does_not_fall_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MATLAB_EXECUTABLE", str(tmp_path / "missing-matlab"))
+    monkeypatch.setattr("dmri_pipeline.noddi.shutil.which", lambda _: "/bin/matlab")
+
+    with pytest.raises(MATLABDiscoveryError, match="MATLAB_EXECUTABLE"):
+        discover_matlab(_config(tmp_path))
+
+
 @pytest.mark.parametrize(
     ("stdout", "match"),
     [
         (
             "__DMRI_MATLAB_VERSION__=R2024a\n"
-            "__DMRI_MEXEXT__=mexmaca64\n"
+            "__DMRI_MEXEXT__=mexa64\n"
             "__DMRI_OPT_INSTALLED__=0\n"
             "__DMRI_OPT_LICENSED__=0\n"
             "__DMRI_MEX_CONFIGURED__=1\n",
@@ -254,7 +292,7 @@ def test_discovery_invalid_explicit_path_does_not_fall_back(tmp_path, monkeypatc
         ),
         (
             "__DMRI_MATLAB_VERSION__=R2024a\n"
-            "__DMRI_MEXEXT__=mexmaca64\n"
+            "__DMRI_MEXEXT__=mexa64\n"
             "__DMRI_OPT_INSTALLED__=1\n"
             "__DMRI_OPT_LICENSED__=1\n"
             "__DMRI_MEX_CONFIGURED__=0\n",
@@ -264,7 +302,7 @@ def test_discovery_invalid_explicit_path_does_not_fall_back(tmp_path, monkeypatc
         (
             "__DMRI_MATLAB_VERSION__=R2024a\n"
             "__DMRI_MATLAB_VERSION__=R2024b\n"
-            "__DMRI_MEXEXT__=mexmaca64\n"
+            "__DMRI_MEXEXT__=mexa64\n"
             "__DMRI_OPT_INSTALLED__=1\n"
             "__DMRI_OPT_LICENSED__=1\n"
             "__DMRI_MEX_CONFIGURED__=1\n",

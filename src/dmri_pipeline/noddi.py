@@ -218,34 +218,31 @@ class NODDIMerge:
 
 
 def discover_matlab(config: PipelineConfig) -> MATLABInstallation:
-    """Discover MATLAB by explicit config, PATH, then newest Applications app."""
+    """Discover MATLAB from config, environment, then the server PATH."""
     if not isinstance(config, PipelineConfig):
         raise MATLABDiscoveryError("config must be a PipelineConfig")
     configured = config.matlab_executable
+    environment_configured = os.environ.get("MATLAB_EXECUTABLE")
     if configured is not None:
         candidate = _normalize_matlab_candidate(configured)
-        if not _is_executable_file(candidate):
-            raise MATLABDiscoveryError(
-                f"invalid explicit MATLAB configuration: {configured}"
-            )
+        source = "explicit tools.matlab_executable"
+    elif environment_configured:
+        candidate = _normalize_matlab_candidate(Path(environment_configured))
+        source = "process MATLAB_EXECUTABLE"
     else:
         on_path = shutil.which("matlab")
-        if on_path:
-            candidate = _normalize_matlab_candidate(Path(on_path))
-        else:
-            applications = sorted(
-                Path("/Applications").glob("MATLAB_R*.app"), reverse=True
-            )
-            candidate = (
-                _normalize_matlab_candidate(applications[0])
-                if applications
-                else Path("/nonexistent/matlab")
-            )
-        if not _is_executable_file(candidate):
+        if on_path is None:
             raise MATLABDiscoveryError(
                 "MATLAB was not found: configure tools.matlab_executable, "
-                "put matlab on PATH, or install /Applications/MATLAB_R*.app"
+                "set MATLAB_EXECUTABLE, or put matlab on PATH"
             )
+        candidate = _normalize_matlab_candidate(Path(on_path))
+        source = "matlab on PATH"
+
+    if not _is_executable_file(candidate):
+        raise MATLABDiscoveryError(
+            f"invalid MATLAB installation from {source}: {candidate}"
+        )
 
     probe = _matlab_probe_expression()
     try:
