@@ -18,7 +18,7 @@ OLD_UNLICENSED_ERFI_SHA256 = (
 )
 REQUIRED_DOCUMENTS = (
     "README.md",
-    "docs/INSTALL_MACOS.md",
+    "docs/INSTALL_ROCKY.md",
     "docs/INPUTS.md",
     "docs/PIPELINE.md",
     "docs/OUTPUTS.md",
@@ -96,7 +96,7 @@ def test_exported_package_audit_is_clean_and_contains_only_the_historical_atlas(
     assert audit.cache_files == []
     assert audit.log_files == []
     assert audit.compiled_binaries == []
-    assert audit.executables == ["run_pipeline.sh", "setup_macos.sh"]
+    assert audit.executables == ["run_pipeline.sh", "setup_rocky.sh"]
     assert audit.sha256_by_path[ATLAS_RELATIVE] == ATLAS_SHA256
     assert audit.files == sorted(audit.files)
 
@@ -464,14 +464,18 @@ def test_required_documentation_covers_the_public_contract() -> None:
     for relative in REQUIRED_DOCUMENTS:
         path = PACKAGE_ROOT / relative
         assert path.is_file() and path.stat().st_size > 0, relative
+    assert not (PACKAGE_ROOT / "docs/INSTALL_MACOS.md").exists()
 
-    readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8").lower()
+    readme_text = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
+    readme = readme_text.lower()
     for required in (
         "research only",
         "not for clinical diagnosis",
-        "apple silicon",
-        "intel",
-        "./setup_macos.sh --check",
+        "rocky linux 9.7",
+        "x86_64",
+        "server",
+        "dmri_software_config",
+        "./setup_rocky.sh --check",
         "./run_pipeline.sh --validate-only",
         "./run_pipeline.sh config/",
         "pa",
@@ -488,15 +492,16 @@ def test_required_documentation_covers_the_public_contract() -> None:
     ):
         assert required in readme, required
 
-    quick_start = readme.split("## quick start", 1)[1].split("##", 1)[0]
+    quick_start = readme_text.split("## Quick start", 1)[1].split("##", 1)[0]
     commands = [
         line.strip()
         for line in quick_start.splitlines()
-        if line.startswith(("cp ", "./"))
+        if line.startswith(("cp ", "export ", "./"))
     ]
     assert commands == [
         "cp config/subject.example.yaml config/subject.yaml",
-        "./setup_macos.sh",
+        "export DMRI_SOFTWARE_CONFIG=/absolute/path/to/dmri-rocky9.sh",
+        "./setup_rocky.sh",
         "./run_pipeline.sh config/subject.yaml",
     ]
     for citation in (
@@ -557,6 +562,21 @@ def test_required_documentation_covers_the_public_contract() -> None:
         "17 named PNGs",
     ):
         assert filename in outputs, filename
+
+
+def test_release_metadata_is_rocky_only_and_consistent() -> None:
+    assert (PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "2.0.0"
+    pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'version = "2.0.0"' in pyproject
+    for relative in (
+        "README.md",
+        "docs/INSTALL_ROCKY.md",
+        "docs/TROUBLESHOOTING.md",
+        "pyproject.toml",
+    ):
+        text = (PACKAGE_ROOT / relative).read_text(encoding="utf-8").lower()
+        assert "macos" not in text, relative
+        assert "setup_macos.sh" not in text, relative
 
 
 def test_attribution_manifest_has_verified_internal_hashes_and_no_project_grant():

@@ -132,7 +132,7 @@ def test_completion_record_is_deterministic_and_parseable(
     assert record.to_dict() == payload
     assert payload["stage"] == "01_test"
     assert payload["subject_id"] == "SYNTH001"
-    assert payload["package_version"] == "1.0.0"
+    assert payload["package_version"] == "2.0.0"
     assert payload["config_sha256"] == hashlib.sha256(
         json.dumps(
             subject_config.canonical_dict(),

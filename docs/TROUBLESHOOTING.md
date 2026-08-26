@@ -2,12 +2,15 @@
 
 ## FSL discovery
 
-Set `FSLDIR` or `tools.fsldir`, or put `topup` on `PATH`. Run
-`./setup_macos.sh --check`. Missing TOPUP, BET, registration tools,
+Confirm that the current Rocky Linux 9.7 x86_64 server shell exports
+`DMRI_SOFTWARE_CONFIG` to a private absolute configuration file. Set `FSLDIR`
+there, unless a subject-specific `tools.fsldir` override is required. Run
+`./setup_rocky.sh --check`. Missing TOPUP, BET, registration tools,
 `eddy_openmp`/`eddy`, `eddy_quad`, configs, or the standard FA image is a
-dependency error (exit 30). This macOS package uses CPU EDDY; it does not
+dependency error (exit 30). This package uses CPU EDDY only; it does not
 configure CUDA EDDY. EDDY or EDDY QUAD process failure is exit 40, while
-malformed scientific output is exit 50.
+malformed scientific output is exit 50. Resolve dependency errors before
+rerunning.
 
 Odd slice counts select the alternate TOPUP configuration checked by setup.
 Do not change `slice_axis`, PA/AP vectors, or `total_readout_time` merely to
@@ -15,11 +18,12 @@ silence TOPUP.
 
 ## MATLAB, Optimization Toolbox, and MEX
 
-Set `MATLAB_EXECUTABLE` or `tools.matlab_executable` if MATLAB discovery
-fails. The package requires a licensed Optimization Toolbox and a selected C
-compiler. Run `mex -setup C`, then rerun `./setup_macos.sh --check`. Setup
-performs a temporary compile/load/run; it does not install MATLAB, a compiler,
-or a licence.
+Set `MATLAB_EXECUTABLE` in the private software configuration, or use the
+higher-precedence subject-specific `tools.matlab_executable` override, if
+MATLAB discovery fails. The package requires a licensed Optimization Toolbox,
+a selected C compiler, and MEX output named `mexa64`. Run `mex -setup C`, then
+rerun `./setup_rocky.sh --check`. Setup performs a temporary compile/load/run;
+it verifies but does not install MATLAB, a compiler, or a licence.
 
 The NIfTI `file2mat`, `mat2file`, and `init` MEX modules are compiled locally
 inside the NODDI stage. Never copy a MEX binary from another architecture.

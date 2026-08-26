@@ -1,4 +1,4 @@
-# Reproducible macOS diffusion MRI pipeline
+# Reproducible Rocky Linux diffusion MRI pipeline
 
 This package runs a single-subject PA/AP diffusion MRI workflow with
 deterministic validation, resumable stages, QC, DTI, two DKI implementations,
@@ -11,21 +11,26 @@ before redistribution or use.
 
 ## Supported system
 
-- macOS on Apple Silicon (`arm64`) or Intel (`x86_64`)
+- Rocky Linux 9.7 x86_64 server
+- a private absolute-path server software configuration exported through
+  `DMRI_SOFTWARE_CONFIG`
 - Conda or Miniforge
-- FSL with TOPUP, BET, EDDY, EDDY QUAD, and registration tools
-- MATLAB with Optimization Toolbox and a working local C MEX compiler
+- FSL with TOPUP, BET, CPU EDDY, EDDY QUAD, and registration tools
+- MATLAB with Optimization Toolbox and a working C MEX compiler that emits
+  `mexa64`
 - enough runtime memory and disk space for uncompressed NODDI working data
 
 The setup script installs only the pinned Python environment and this Python
-package. It does not install or license FSL, MATLAB, Optimization Toolbox, or a
-C compiler.
+package. It verifies, but does not install or license, FSL, MATLAB,
+Optimization Toolbox, or compiler dependencies. VS Code Remote SSH is the
+supported operator workflow, but it is not required to execute the pipeline.
 
 ## Quick start
 
 ```bash
 cp config/subject.example.yaml config/subject.yaml
-./setup_macos.sh
+export DMRI_SOFTWARE_CONFIG=/absolute/path/to/dmri-rocky9.sh
+./setup_rocky.sh
 ./run_pipeline.sh config/subject.yaml
 ```
 
@@ -39,7 +44,7 @@ the package does not infer them from DICOM or sidecars.
 Optional preflight commands are:
 
 ```bash
-./setup_macos.sh --check
+./setup_rocky.sh --check
 ./run_pipeline.sh --validate-only config/subject.yaml
 ```
 
@@ -66,12 +71,12 @@ Plan at least 16 GiB memory; 32 GiB or more is preferable for parallel NODDI.
 Automatic selection permits at most eight workers, leaves two CPUs free, and
 budgets 8 GiB of installed memory per worker. Lower
 `analysis.noddi_workers` when the machine is shared or memory constrained.
-Confirm actual free disk with `./setup_macos.sh --check` and monitor the first
+Confirm actual free disk with `./setup_rocky.sh --check` and monitor the first
 representative subject before scheduling a cohort.
 
 ## Documentation
 
-- [macOS installation](docs/INSTALL_MACOS.md)
+- [Rocky Linux installation](docs/INSTALL_ROCKY.md)
 - [input and configuration contract](docs/INPUTS.md)
 - [ordered pipeline](docs/PIPELINE.md)
 - [outputs](docs/OUTPUTS.md)
