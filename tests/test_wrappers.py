@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -82,6 +84,209 @@ def _write_linux_uname_and_gnu_stat(fake_bin: Path) -> None:
     stat.chmod(0o755)
 
 
+def _run_software_loader(
+    tmp_path: Path,
+    config_text: str,
+    *,
+    inherited: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    config = tmp_path / "private-software.sh"
+    config.write_text(config_text, encoding="utf-8")
+    fake_bin = tmp_path / "loader-bin"
+    fake_bin.mkdir()
+    _write_linux_uname_and_gnu_stat(fake_bin)
+    environment = os.environ.copy()
+    environment.update(inherited or {})
+    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+    environment["DMRI_SOFTWARE_CONFIG"] = str(config)
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                "set -euo pipefail; "
+                "fail() { printf 'FAIL: %s\\n' \"$*\" >&2; exit 30; }; "
+                f"source {PACKAGE_ROOT / 'scripts' / 'rocky_environment.sh'}; "
+                "load_software_config"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _run_platform_helper(
+    tmp_path: Path, release: Path, uname: Path
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                "set -euo pipefail; "
+                "fail() { printf 'FAIL: %s\\n' \"$*\" >&2; exit 30; }; "
+                f"source {PACKAGE_ROOT / 'scripts' / 'rocky_environment.sh'}; "
+                "check_rocky_platform \"$1\" \"$2\""
+            ),
+            "platform-helper",
+            str(release),
+            str(uname),
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_platform_helper_accepts_explicit_rocky_fixture(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "platform-bin"
+    fake_bin.mkdir()
+    _write_linux_uname_and_gnu_stat(fake_bin)
+
+    result = _run_platform_helper(
+        tmp_path, _write_rocky_release(tmp_path), fake_bin / "uname"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Rocky Linux 9.7 x86_64" in result.stdout
+
+
+@pytest.mark.parametrize("wrapper", ("setup_rocky.sh", "run_pipeline.sh"))
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin entry-point regression")
+def test_public_wrapper_cannot_use_inherited_platform_bypass(
+    tmp_path: Path, wrapper: str
+) -> None:
+    environment, _ = _setup_check_environment(tmp_path)
+    uname_capture = tmp_path / "path-uname-was-called"
+    environment["UNAME_CAPTURE"] = str(uname_capture)
+    fake_uname = Path(environment["PATH"].split(":", 1)[0]) / "uname"
+    fake_uname.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'called\\n' > \"$UNAME_CAPTURE\"\n"
+        "case \"${1:-}\" in\n"
+        "  -s) printf '%s\\n' Linux ;;\n"
+        "  -m) printf '%s\\n' x86_64 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_uname.chmod(0o755)
+    arguments = ["--check"] if wrapper == "setup_rocky.sh" else ["subject.yaml"]
+
+    result = subprocess.run(
+        [str(PACKAGE_ROOT / wrapper), *arguments],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 30
+    assert "/etc/os-release" in result.stderr
+    assert environment["DMRI_OS_RELEASE_FILE"] not in result.stderr
+    assert not uname_capture.exists()
+
+
+def _run_internal_wrapper(
+    wrapper: str,
+    arguments: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    test_environment = environment.copy()
+    test_environment["DMRI_TEST_WRAPPER"] = str(PACKAGE_ROOT / wrapper)
+    test_environment["DMRI_TEST_RELEASE"] = environment[
+        "DMRI_OS_RELEASE_FILE"
+    ]
+    test_environment["DMRI_TEST_UNAME"] = str(
+        Path(environment["PATH"].split(":", 1)[0]) / "uname"
+    )
+    function = (
+        "_dmri_setup_rocky_main"
+        if wrapper == "setup_rocky.sh"
+        else "_dmri_run_pipeline_main"
+    )
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                f'source "$DMRI_TEST_WRAPPER"; {function} '
+                '"$DMRI_TEST_RELEASE" "$DMRI_TEST_UNAME" "$@"'
+            ),
+            "internal-wrapper",
+            *arguments,
+        ],
+        cwd=cwd,
+        env=test_environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "omitted",
+    (
+        "CONDA_EXE",
+        "FSLDIR",
+        "MATLAB_EXECUTABLE",
+        "DMRI_EXPECTED_FSL_VERSION",
+        "DMRI_EXPECTED_MATLAB_VERSION",
+    ),
+)
+def test_software_config_omission_cannot_inherit_parent_value(
+    tmp_path: Path, omitted: str
+) -> None:
+    values = {
+        "CONDA_EXE": "/configured/conda",
+        "FSLDIR": "/configured/fsl",
+        "MATLAB_EXECUTABLE": "/configured/matlab",
+        "DMRI_EXPECTED_FSL_VERSION": "6.0.7.18",
+        "DMRI_EXPECTED_MATLAB_VERSION": "25.1",
+    }
+    config_text = "".join(
+        f"export {name}={value!r}\n"
+        for name, value in values.items()
+        if name != omitted
+    )
+    inherited = {name: f"stale-{name}" for name in values}
+
+    result = _run_software_loader(
+        tmp_path, config_text, inherited=inherited
+    )
+
+    assert result.returncode == 30
+    assert f"missing {omitted}" in result.stderr
+
+
+def test_software_config_syntax_error_is_configuration_error(tmp_path: Path) -> None:
+    result = _run_software_loader(
+        tmp_path,
+        "export CONDA_EXE=/configured/conda\nif then\n",
+    )
+
+    assert result.returncode == 30
+    assert "could not be loaded" in result.stderr
+
+
+def test_software_config_execution_error_is_configuration_error(
+    tmp_path: Path,
+) -> None:
+    result = _run_software_loader(
+        tmp_path,
+        "false\nexport CONDA_EXE=/configured/conda\n",
+    )
+
+    assert result.returncode == 30
+    assert "could not be loaded" in result.stderr
+
+
 def test_environment_and_example_paths_use_public_one_command_contract() -> None:
     environment = yaml.safe_load(
         (PACKAGE_ROOT / "environment.yml").read_text(encoding="utf-8")
@@ -129,13 +334,11 @@ def test_run_wrapper_is_relocation_safe_preserves_argv_exit_and_bytecode_setting
     )
     environment["DMRI_OS_RELEASE_FILE"] = str(_write_rocky_release(tmp_path))
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "run_pipeline.sh"), "--dry-run", config.name],
+    result = _run_internal_wrapper(
+        "run_pipeline.sh",
+        ["--dry-run", config.name],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode == 7
@@ -180,13 +383,11 @@ def test_run_wrapper_returns_dependency_code_when_environment_is_missing(
     )
     environment["DMRI_OS_RELEASE_FILE"] = str(_write_rocky_release(tmp_path))
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "run_pipeline.sh"), "relative.yaml"],
+    result = _run_internal_wrapper(
+        "run_pipeline.sh",
+        ["relative.yaml"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode == 30
@@ -251,13 +452,11 @@ def _setup_check_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
 def test_setup_check_succeeds_with_complete_safe_fake_tools(tmp_path: Path) -> None:
     environment, _ = _setup_check_environment(tmp_path)
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode == 0, result.stderr
@@ -273,13 +472,11 @@ def test_setup_check_names_a_missing_fsl_component(tmp_path: Path) -> None:
     environment, fsldir = _setup_check_environment(tmp_path)
     (fsldir / "bin" / "applywarp").unlink()
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode != 0
@@ -302,13 +499,11 @@ def test_setup_check_uses_matlab_executable_from_software_config(
         )
     )
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode == 0, result.stderr
@@ -333,13 +528,11 @@ def test_setup_check_fails_when_mex_cannot_compile_and_run(
     )
     matlab.chmod(0o755)
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode != 0
@@ -357,13 +550,11 @@ def test_setup_rejects_rocky_id_and_version_with_a_non_rocky_name(
     )
     environment["DMRI_OS_RELEASE_FILE"] = str(release)
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode == 30
@@ -386,13 +577,11 @@ def test_setup_rejects_mexext_with_mexa64_prefix(tmp_path: Path) -> None:
     )
     matlab.chmod(0o755)
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode == 30
@@ -403,13 +592,11 @@ def test_run_wrapper_requires_absolute_readable_software_config(tmp_path: Path) 
     environment, _ = _setup_check_environment(tmp_path)
     environment.pop("DMRI_SOFTWARE_CONFIG", None)
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "run_pipeline.sh"), "subject.yaml"],
+    result = _run_internal_wrapper(
+        "run_pipeline.sh",
+        ["subject.yaml"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode == 30
@@ -420,13 +607,11 @@ def test_setup_rejects_group_or_world_writable_software_config(tmp_path: Path) -
     environment, _ = _setup_check_environment(tmp_path)
     Path(environment["DMRI_SOFTWARE_CONFIG"]).chmod(0o666)
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode == 30
@@ -439,13 +624,11 @@ def test_setup_rejects_non_rocky_release(tmp_path: Path) -> None:
     release.write_text('ID="ubuntu"\nVERSION_ID="24.04"\n', encoding="utf-8")
     environment["DMRI_OS_RELEASE_FILE"] = str(release)
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode != 0
@@ -458,13 +641,11 @@ def test_run_wrapper_rejects_non_rocky_release(tmp_path: Path) -> None:
     release.write_text('ID="ubuntu"\nVERSION_ID="24.04"\n', encoding="utf-8")
     environment["DMRI_OS_RELEASE_FILE"] = str(release)
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "run_pipeline.sh"), "subject.yaml"],
+    result = _run_internal_wrapper(
+        "run_pipeline.sh",
+        ["subject.yaml"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode == 30
@@ -475,13 +656,11 @@ def test_setup_rejects_external_version_mismatch(tmp_path: Path) -> None:
     environment, fsldir = _setup_check_environment(tmp_path)
     (fsldir / "etc" / "fslversion").write_text("6.0.7.17\n", encoding="utf-8")
 
-    result = subprocess.run(
-        [str(PACKAGE_ROOT / "setup_rocky.sh"), "--check"],
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
         cwd=tmp_path,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
+        environment=environment,
     )
 
     assert result.returncode != 0

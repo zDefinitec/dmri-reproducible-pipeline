@@ -23,10 +23,22 @@ In VS Code, choose **Remote - SSH: Connect to Host...**, select
 server. The status bar must show `SSH: dmri-rocky` before editing or running
 commands.
 
-Verify the same context in a terminal before a run:
+### Mac-local connection check
+
+Before opening the VS Code Remote window, check the alias from a Mac-local
+terminal, then exit that shell:
 
 ```bash
 ssh dmri-rocky
+exit
+```
+
+### VS Code Remote integrated-terminal check
+
+Once the status bar shows `SSH: dmri-rocky`, verify the remote context directly
+in the VS Code integrated terminal. Do not start another SSH session there:
+
+```bash
 cat /etc/os-release
 uname -m
 pwd

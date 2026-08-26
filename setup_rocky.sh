@@ -16,8 +16,6 @@ fail() {
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/scripts/rocky_environment.sh"
-check_rocky_platform
-load_software_config
 
 find_conda() {
     [[ "${CONDA_EXE}" == /* && -x "${CONDA_EXE}" ]] \
@@ -168,24 +166,34 @@ usage() {
     echo "Usage: ./setup_rocky.sh [--check]" >&2
 }
 
-case "${1:-}" in
-    "")
-        conda_bin=$(find_conda)
-        "${conda_bin}" env update -n "${ENVIRONMENT_NAME}" \
-            -f "${ENVIRONMENT_FILE}" --prune
-        (
-            cd "${SCRIPT_DIR}"
-            "${conda_bin}" run -n "${ENVIRONMENT_NAME}" python -m pip install \
-                --no-deps --no-build-isolation .
-        )
-        run_checks
-        ;;
-    --check)
-        [[ "$#" -eq 1 ]] || { usage; exit 2; }
-        run_checks
-        ;;
-    *)
-        usage
-        exit 2
-        ;;
-esac
+_dmri_setup_rocky_main() {
+    local release_file=$1 uname_bin=$2
+    shift 2
+    check_rocky_platform "${release_file}" "${uname_bin}"
+    load_software_config
+    case "${1:-}" in
+        "")
+            conda_bin=$(find_conda)
+            "${conda_bin}" env update -n "${ENVIRONMENT_NAME}" \
+                -f "${ENVIRONMENT_FILE}" --prune
+            (
+                cd "${SCRIPT_DIR}"
+                "${conda_bin}" run -n "${ENVIRONMENT_NAME}" python -m pip install \
+                    --no-deps --no-build-isolation .
+            )
+            run_checks
+            ;;
+        --check)
+            [[ "$#" -eq 1 ]] || { usage; return 2; }
+            run_checks
+            ;;
+        *)
+            usage
+            return 2
+            ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    _dmri_setup_rocky_main /etc/os-release /usr/bin/uname "$@"
+fi

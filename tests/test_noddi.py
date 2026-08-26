@@ -19,6 +19,7 @@ from dmri_pipeline.config import (
     AcquisitionConfig,
     AnalysisConfig,
     PipelineConfig,
+    load_config,
 )
 from dmri_pipeline.noddi import (
     MATLABDiscoveryError,
@@ -223,6 +224,7 @@ def test_discovery_normalizes_explicit_app_and_parses_probe(
                 "__DMRI_OPT_INSTALLED__=1\n"
                 "__DMRI_OPT_LICENSED__=1\n"
                 "__DMRI_MEX_CONFIGURED__=1\n"
+                "__DMRI_MEX_WORKS__=1\n"
             ),
             stderr="",
         )
@@ -261,6 +263,7 @@ def test_discovery_uses_matlab_executable_environment_before_path(
                 "__DMRI_OPT_INSTALLED__=1\n"
                 "__DMRI_OPT_LICENSED__=1\n"
                 "__DMRI_MEX_CONFIGURED__=1\n"
+                "__DMRI_MEX_WORKS__=1\n"
             ),
             stderr="",
         ),
@@ -279,6 +282,81 @@ def test_invalid_matlab_environment_does_not_fall_back(
         discover_matlab(_config(tmp_path))
 
 
+def test_explicit_matlab_rejects_expected_version_mismatch_without_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subject_config
+) -> None:
+    explicit = _executable(tmp_path / "explicit" / "bin" / "matlab")
+    fallback = _executable(tmp_path / "fallback" / "bin" / "matlab")
+    monkeypatch.setenv("MATLAB_EXECUTABLE", str(fallback))
+    monkeypatch.setenv("DMRI_EXPECTED_MATLAB_VERSION", "25.1")
+    seen: list[tuple[str, ...]] = []
+    yaml_path = subject_config.config_path
+    yaml_path.write_text(
+        yaml_path.read_text(encoding="utf-8")
+        + "tools:\n"
+        + f"  matlab_executable: {json.dumps(str(explicit))}\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(argv, **kwargs):
+        seen.append(tuple(argv))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=(
+                "__DMRI_MATLAB_VERSION__=24.2\n"
+                "__DMRI_MEXEXT__=mexa64\n"
+                "__DMRI_OPT_INSTALLED__=1\n"
+                "__DMRI_OPT_LICENSED__=1\n"
+                "__DMRI_MEX_CONFIGURED__=1\n"
+                "__DMRI_MEX_WORKS__=1\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("dmri_pipeline.noddi.subprocess.run", fake_run)
+
+    with pytest.raises(MATLABDiscoveryError, match="version mismatch.*24.2"):
+        discover_matlab(load_config(yaml_path))
+    assert [argv[0] for argv in seen] == [str(explicit.resolve())]
+
+
+@pytest.mark.parametrize(
+    ("mexext", "mex_works", "match"),
+    (
+        ("mexmaca64", "1", "mexa64"),
+        ("mexa64", "0", "compile.*load.*run"),
+    ),
+)
+def test_discovery_rejects_incompatible_linux_mex_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mexext: str,
+    mex_works: str,
+    match: str,
+) -> None:
+    executable = _executable(tmp_path / "matlab")
+    monkeypatch.setattr(
+        "dmri_pipeline.noddi.subprocess.run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=(
+                "__DMRI_MATLAB_VERSION__=25.1\n"
+                f"__DMRI_MEXEXT__={mexext}\n"
+                "__DMRI_OPT_INSTALLED__=1\n"
+                "__DMRI_OPT_LICENSED__=1\n"
+                "__DMRI_MEX_CONFIGURED__=1\n"
+                f"__DMRI_MEX_WORKS__={mex_works}\n"
+            ),
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(MATLABDiscoveryError, match=match):
+        discover_matlab(_config(tmp_path, executable))
+
+
 @pytest.mark.parametrize(
     ("stdout", "match"),
     [
@@ -287,7 +365,8 @@ def test_invalid_matlab_environment_does_not_fall_back(
             "__DMRI_MEXEXT__=mexa64\n"
             "__DMRI_OPT_INSTALLED__=0\n"
             "__DMRI_OPT_LICENSED__=0\n"
-            "__DMRI_MEX_CONFIGURED__=1\n",
+            "__DMRI_MEX_CONFIGURED__=1\n"
+            "__DMRI_MEX_WORKS__=1\n",
             "Optimization Toolbox",
         ),
         (
@@ -295,7 +374,8 @@ def test_invalid_matlab_environment_does_not_fall_back(
             "__DMRI_MEXEXT__=mexa64\n"
             "__DMRI_OPT_INSTALLED__=1\n"
             "__DMRI_OPT_LICENSED__=1\n"
-            "__DMRI_MEX_CONFIGURED__=0\n",
+            "__DMRI_MEX_CONFIGURED__=0\n"
+            "__DMRI_MEX_WORKS__=0\n",
             "MEX",
         ),
         ("ordinary MATLAB output\n", "sentinel"),
@@ -305,7 +385,8 @@ def test_invalid_matlab_environment_does_not_fall_back(
             "__DMRI_MEXEXT__=mexa64\n"
             "__DMRI_OPT_INSTALLED__=1\n"
             "__DMRI_OPT_LICENSED__=1\n"
-            "__DMRI_MEX_CONFIGURED__=1\n",
+            "__DMRI_MEX_CONFIGURED__=1\n"
+            "__DMRI_MEX_WORKS__=1\n",
             "sentinel",
         ),
     ],

@@ -49,6 +49,7 @@ _SENTINELS = {
     "opt_installed": "__DMRI_OPT_INSTALLED__",
     "opt_licensed": "__DMRI_OPT_LICENSED__",
     "mex_configured": "__DMRI_MEX_CONFIGURED__",
+    "mex_works": "__DMRI_MEX_WORKS__",
 }
 _MEXEXT = re.compile(r"^mex[A-Za-z0-9_]+$")
 
@@ -218,7 +219,12 @@ class NODDIMerge:
 
 
 def discover_matlab(config: PipelineConfig) -> MATLABInstallation:
-    """Discover MATLAB from config, environment, then the server PATH."""
+    """Discover MATLAB from config, environment, then the server PATH.
+
+    Direct library callers may omit ``DMRI_EXPECTED_MATLAB_VERSION`` to run
+    capability-only discovery. Public wrappers always export it and therefore
+    enforce the exact configured version, including for YAML-selected MATLAB.
+    """
     if not isinstance(config, PipelineConfig):
         raise MATLABDiscoveryError("config must be a PipelineConfig")
     configured = config.matlab_executable
@@ -273,6 +279,19 @@ def discover_matlab(config: PipelineConfig) -> MATLABInstallation:
             f"{completed.returncode}{suffix}"
         )
     values = _parse_probe(completed.stdout)
+    expected_version = os.environ.get("DMRI_EXPECTED_MATLAB_VERSION")
+    if expected_version is not None:
+        if not expected_version:
+            raise MATLABDiscoveryError(
+                "DMRI_EXPECTED_MATLAB_VERSION must not be empty"
+            )
+        if values["version"] != expected_version:
+            raise MATLABDiscoveryError(
+                "MATLAB version mismatch: expected "
+                f"{expected_version}, found {values['version']}"
+            )
+    if values["mexext"] != "mexa64":
+        raise MATLABDiscoveryError("MATLAB mexext must be mexa64")
     if values["opt_installed"] != "1" or values["opt_licensed"] != "1":
         raise MATLABDiscoveryError(
             "MATLAB Optimization Toolbox is not installed and licensed"
@@ -280,6 +299,11 @@ def discover_matlab(config: PipelineConfig) -> MATLABInstallation:
     if values["mex_configured"] != "1":
         raise MATLABDiscoveryError(
             "MATLAB MEX is not callable/configured; setup must run mex -setup C"
+        )
+    if values["mex_works"] != "1":
+        raise MATLABDiscoveryError(
+            "MATLAB C MEX compiler could not compile, load, and run a "
+            "temporary probe"
         )
     return MATLABInstallation(
         executable=candidate.resolve(strict=True),
@@ -741,7 +765,20 @@ def _matlab_probe_expression() -> str:
         "fprintf('__DMRI_OPT_LICENSED__=%d\\n',license('test','Optimization_Toolbox'));"
         "try,c=mex.getCompilerConfigurations('C','Selected');ok=~isempty(c);"
         "catch,ok=false;end;"
-        "fprintf('__DMRI_MEX_CONFIGURED__=%d\\n',ok)"
+        "fprintf('__DMRI_MEX_CONFIGURED__=%d\\n',ok);"
+        "d=tempname;mkdir(d);cleanup_dir=onCleanup(@()rmdir(d,'s'));"
+        "src=fullfile(d,'dmri_mex_probe.c');q=char(34);"
+        "code=['#include ' q 'mex.h' q newline "
+        "'void mexFunction(int nlhs,mxArray *plhs[],int nrhs,const mxArray *prhs[]){plhs[0]=mxCreateDoubleScalar(42.0);}' newline];"
+        "fid=fopen(src,'w');assert(fid>=0);fwrite(fid,code);fclose(fid);"
+        "mex_works=false;try,mex('-silent','-outdir',d,src);"
+        "addpath(d);cleanup_path=onCleanup(@()rmpath(d));"
+        "clear dmri_mex_probe;y=dmri_mex_probe();"
+        "mex_works=isscalar(y)&&isfinite(y)&&y==42;"
+        "clear dmri_mex_probe cleanup_path;"
+        "catch ME,disp(getReport(ME,'extended','hyperlinks','off'));"
+        "clear dmri_mex_probe;if exist('cleanup_path','var'),clear cleanup_path;end;end;"
+        "fprintf('__DMRI_MEX_WORKS__=%d\\n',mex_works);clear cleanup_dir"
     )
 
 
@@ -758,7 +795,7 @@ def _parse_probe(stdout: str) -> dict[str, str]:
         values[key] = matches[0].strip()
     if not _MEXEXT.fullmatch(values["mexext"]):
         raise MATLABDiscoveryError("MATLAB probe returned malformed mexext sentinel")
-    for key in ("opt_installed", "opt_licensed", "mex_configured"):
+    for key in ("opt_installed", "opt_licensed", "mex_configured", "mex_works"):
         if values[key] not in {"0", "1"}:
             raise MATLABDiscoveryError(
                 f"MATLAB probe sentinel {_SENTINELS[key]} must be 0 or 1"

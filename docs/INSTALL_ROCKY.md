@@ -36,7 +36,15 @@ compile/load/run, fixed atlas hashes, and available disk.
 
 The MEX output must be `mexa64`. `tools.fsldir` and
 `tools.matlab_executable` in a subject YAML remain higher-precedence,
-subject-specific overrides.
+subject-specific overrides. The runtime revalidates the final selected FSL and
+MATLAB against the exact versions from the private software configuration and
+runs the same MATLAB capability probe, including a real temporary MEX
+compile/load/run; an invalid override is rejected without fallback.
+
+Direct Python library callers that omit `DMRI_EXPECTED_FSL_VERSION` or
+`DMRI_EXPECTED_MATLAB_VERSION` receive capability-only discovery. This is an
+explicit testing/library behavior, not a public-wrapper mode: both public
+wrappers require and export both expected-version values.
 
 The setup script verifies but does not install or license FSL, MATLAB,
 Optimization Toolbox, or compiler dependencies. The package compiles the

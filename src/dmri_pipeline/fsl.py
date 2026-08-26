@@ -424,7 +424,12 @@ def _candidate_identities(path: Path) -> frozenset[object]:
 
 
 def discover_fsl(config: PipelineConfig) -> FSLInstallation:
-    """Discover and validate FSL without changing the process environment."""
+    """Discover and validate FSL without changing the process environment.
+
+    Direct library callers may omit ``DMRI_EXPECTED_FSL_VERSION`` to perform
+    capability-only discovery. Public wrappers always export it and therefore
+    enforce the exact configured version, including for YAML-selected FSL.
+    """
     configured = getattr(config, "fsldir", None)
     source: str
     if configured is not None:
@@ -456,6 +461,8 @@ def discover_fsl(config: PipelineConfig) -> FSLInstallation:
 def _validate_installation(fsldir: Path) -> FSLInstallation:
     if not fsldir.is_dir():
         raise FSLDiscoveryError("FSLDIR is not a directory")
+
+    _validate_expected_fsl_version(fsldir)
 
     tools: dict[str, Path] = {}
     for name in _REQUIRED_TOOLS:
@@ -514,6 +521,31 @@ def _validate_installation(fsldir: Path) -> FSLInstallation:
         _environment_items=tuple(sorted(environment.items())),
         _runtime_material_items=runtime_material,
     )
+
+
+def _validate_expected_fsl_version(fsldir: Path) -> None:
+    expected = os.environ.get("DMRI_EXPECTED_FSL_VERSION")
+    if expected is None:
+        return
+    if not expected:
+        raise FSLDiscoveryError("DMRI_EXPECTED_FSL_VERSION must not be empty")
+    version_file = fsldir / "etc" / "fslversion"
+    try:
+        contents = _read_stable_runtime_prefix(
+            version_file, "FSL version file", require_complete=True
+        ).decode("utf-8")
+    except (UnicodeError, FSLDiscoveryError) as error:
+        raise FSLDiscoveryError(
+            "cannot read a valid FSL version file: etc/fslversion"
+        ) from error
+    lines = contents.splitlines()
+    actual = lines[0].strip() if lines else ""
+    if not actual:
+        raise FSLDiscoveryError("FSL version file is empty")
+    if actual != expected:
+        raise FSLDiscoveryError(
+            f"FSL version mismatch: expected {expected}, found {actual}"
+        )
 
 
 def _discover_runtime_material_files(

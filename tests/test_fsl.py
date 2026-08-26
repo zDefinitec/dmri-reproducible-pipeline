@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from dmri_pipeline.config import load_config
 from dmri_pipeline.fsl import (
     ExternalCommandError,
     FSLContext,
@@ -286,6 +287,31 @@ def test_discovery_rejects_invalid_explicit_fsldir_without_falling_through(
 
     with pytest.raises(FSLDiscoveryError, match="explicit"):
         discover_fsl(SimpleNamespace(fsldir=tmp_path / "invalid"))
+
+
+def test_explicit_fsldir_rejects_expected_version_mismatch_without_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subject_config
+) -> None:
+    explicit = _fake_fsl(tmp_path / "explicit")
+    fallback = _fake_fsl(tmp_path / "fallback")
+    (explicit / "etc" / "fslversion").write_text(
+        "6.0.7.17\n", encoding="utf-8"
+    )
+    (fallback / "etc" / "fslversion").write_text(
+        "6.0.7.18\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("DMRI_EXPECTED_FSL_VERSION", "6.0.7.18")
+    monkeypatch.setenv("FSLDIR", str(fallback))
+    monkeypatch.setenv("PATH", str(fallback / "bin"))
+    yaml_path = subject_config.config_path
+    yaml_path.write_text(
+        yaml_path.read_text(encoding="utf-8")
+        + f"tools:\n  fsldir: {json.dumps(str(explicit))}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FSLDiscoveryError, match="version mismatch.*6.0.7.17"):
+        discover_fsl(load_config(yaml_path))
 
 
 def test_discovery_uses_process_fsldir_before_path(
