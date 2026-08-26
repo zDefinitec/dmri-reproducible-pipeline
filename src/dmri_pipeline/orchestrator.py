@@ -1278,32 +1278,30 @@ def _validate_subject_atlas(atlas_path: Path, reference_fa: Path) -> None:
         )
 
 
+def _parse_memtotal_kib(text: str) -> int:
+    records = [line for line in text.splitlines() if line.startswith("MemTotal:")]
+    if len(records) != 1:
+        raise NODDIError("/proc/meminfo must contain exactly one MemTotal value in kB")
+    match = re.fullmatch(r"MemTotal:[ \t]+([0-9]+)[ \t]+kB[ \t]*", records[0])
+    if match is None:
+        raise NODDIError("/proc/meminfo must contain exactly one MemTotal value in kB")
+    value = int(match.group(1))
+    if value <= 0:
+        raise NODDIError("/proc/meminfo MemTotal must be positive")
+    return value
+
+
 def _installed_memory_gib(
-    command_runner: Callable[..., object] = subprocess.run,
+    meminfo_path: Path = Path("/proc/meminfo"),
 ) -> float:
     try:
-        result = command_runner(
-            ("/usr/sbin/sysctl", "-n", "hw.memsize"),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5.0,
-            shell=False,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired, TypeError, ValueError) as error:
-        raise NODDIError("cannot determine installed physical memory with sysctl") from error
-    if getattr(result, "returncode", None) != 0:
-        raise NODDIError("cannot determine installed physical memory with sysctl")
-    try:
-        byte_count = int(str(getattr(result, "stdout", "")).strip())
-    except ValueError as error:
-        raise NODDIError("sysctl returned an invalid physical-memory value") from error
-    gib = byte_count / (1024.0**3)
-    if byte_count <= 0 or not math.isfinite(gib):
-        raise NODDIError("sysctl returned an invalid physical-memory value")
+        text = meminfo_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError) as error:
+        raise NODDIError(f"cannot read physical memory from {meminfo_path}") from error
+    kib = _parse_memtotal_kib(text)
+    gib = kib / (1024.0**2)
+    if not math.isfinite(gib) or gib <= 0:
+        raise NODDIError("installed physical memory must be positive and finite")
     return gib
 
 

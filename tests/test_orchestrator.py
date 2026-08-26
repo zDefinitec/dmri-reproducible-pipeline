@@ -173,15 +173,41 @@ def test_subject_lock_is_nonblocking_and_rejects_second_holder(
                 pass
 
 
-def test_memory_probe_uses_bounded_positive_sysctl_value() -> None:
-    calls: list[tuple[str, ...]] = []
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("MemTotal:       16777216 kB\nMemFree: 1 kB\n", 16777216),
+        ("MemFree: 1 kB\nMemTotal: 8388608 kB\n", 8388608),
+    ],
+)
+def test_parse_memtotal_kib(text: str, expected: int) -> None:
+    assert orchestrator._parse_memtotal_kib(text) == expected
 
-    def probe(argv, **kwargs):
-        calls.append(tuple(argv))
-        return type("Result", (), {"returncode": 0, "stdout": "17179869184\n"})()
 
-    assert _installed_memory_gib(command_runner=probe) == 16.0
-    assert calls == [("/usr/sbin/sysctl", "-n", "hw.memsize")]
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "MemFree: 1 kB\n",
+        "MemTotal: 0 kB\n",
+        "MemTotal: -1 kB\n",
+        "MemTotal: unknown kB\n",
+        "MemTotal: 1 MB\n",
+        "MemTotal: 1 kB\nMemTotal: 2 kB\n",
+        "MemTotal: unknown kB\nMemTotal: 1 kB\n",
+        "MemTotal:\n1 kB\n",
+    ],
+)
+def test_parse_memtotal_kib_rejects_malformed_values(text: str) -> None:
+    with pytest.raises(NODDIError, match="MemTotal"):
+        orchestrator._parse_memtotal_kib(text)
+
+
+def test_installed_memory_reads_proc_meminfo(tmp_path: Path) -> None:
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 16777216 kB\n", encoding="utf-8")
+
+    assert _installed_memory_gib(meminfo) == 16.0
 
 
 def test_pipeline_outcome_is_immutable(subject_config) -> None:
@@ -1836,10 +1862,10 @@ def test_dry_run_wraps_memory_probe_failure_as_typed_external_error(
     monkeypatch.setattr(
         orchestrator,
         "_installed_memory_gib",
-        lambda: (_ for _ in ()).throw(NODDIError("sysctl failed")),
+        lambda: (_ for _ in ()).throw(NODDIError("cannot read /proc/meminfo")),
     )
 
-    with pytest.raises(orchestrator.PipelineExternalError, match="sysctl"):
+    with pytest.raises(orchestrator.PipelineExternalError, match="/proc/meminfo"):
         _dry_run_commands(
             subject_config, audit_inputs(subject_config), runtime
         )
