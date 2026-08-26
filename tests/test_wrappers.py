@@ -287,6 +287,71 @@ def test_software_config_execution_error_is_configuration_error(
     assert "could not be loaded" in result.stderr
 
 
+def test_software_config_exit_is_configuration_error(tmp_path: Path) -> None:
+    result = _run_software_loader(
+        tmp_path,
+        "printf 'config-noise\\n'\nexit 7\n",
+    )
+
+    assert result.returncode == 30
+    assert result.stdout == ""
+    assert "could not be loaded" in result.stderr
+
+
+def test_software_config_stdout_and_metacharacters_do_not_corrupt_import(
+    tmp_path: Path,
+) -> None:
+    result = _run_software_loader(
+        tmp_path,
+        "printf 'config-noise\\n'\n"
+        "export CONDA_EXE='/configured/conda with spaces'\n"
+        "export FSLDIR='/configured/fsl:one'\n"
+        "export MATLAB_EXECUTABLE='/configured/matlab'\n"
+        "export DMRI_EXPECTED_FSL_VERSION='6.0.7.18'\n"
+        "export DMRI_EXPECTED_MATLAB_VERSION='25.1; exit 9'\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert "config-noise" in result.stderr
+
+
+def test_software_config_runs_without_unrelated_parent_environment(
+    tmp_path: Path,
+) -> None:
+    result = _run_software_loader(
+        tmp_path,
+        "export CONDA_EXE=\"$PARENT_ONLY\"\n"
+        "export FSLDIR=/configured/fsl\n"
+        "export MATLAB_EXECUTABLE=/configured/matlab\n"
+        "export DMRI_EXPECTED_FSL_VERSION=6.0.7.18\n"
+        "export DMRI_EXPECTED_MATLAB_VERSION=25.1\n",
+        inherited={"PARENT_ONLY": "/stale/conda"},
+    )
+
+    assert result.returncode == 30
+    assert "could not be loaded" in result.stderr
+
+
+@pytest.mark.parametrize("wrapper", ("setup_rocky.sh", "run_pipeline.sh"))
+def test_wrapper_normalizes_software_config_exit(
+    tmp_path: Path, wrapper: str
+) -> None:
+    environment, _ = _setup_check_environment(tmp_path)
+    Path(environment["DMRI_SOFTWARE_CONFIG"]).write_text(
+        "printf 'config-noise\\n'\nexit 7\n", encoding="utf-8"
+    )
+    arguments = ["--check"] if wrapper == "setup_rocky.sh" else ["subject.yaml"]
+
+    result = _run_internal_wrapper(
+        wrapper, arguments, cwd=tmp_path, environment=environment
+    )
+
+    assert result.returncode == 30
+    assert "config-noise" not in result.stdout
+    assert "could not be loaded" in result.stderr
+
+
 def test_environment_and_example_paths_use_public_one_command_contract() -> None:
     environment = yaml.safe_load(
         (PACKAGE_ROOT / "environment.yml").read_text(encoding="utf-8")

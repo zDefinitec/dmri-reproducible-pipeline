@@ -16,33 +16,61 @@ load_software_config() {
     mode=$(stat -c '%a' "${config_path}")
     (( (8#${mode} & 8#022) == 0 )) \
         || fail "DMRI_SOFTWARE_CONFIG must not be group- or world-writable"
-    /bin/bash -n "${config_path}" >/dev/null 2>&1 \
-        || fail "software configuration could not be loaded"
-    unset CONDA_EXE FSLDIR MATLAB_EXECUTABLE \
+    local payload
+    if ! payload=$(
+        /usr/bin/env -i /bin/bash --noprofile --norc -c '
+            set -euo pipefail
+            config_path=$1
+            required=(
+                CONDA_EXE FSLDIR MATLAB_EXECUTABLE
+                DMRI_EXPECTED_FSL_VERSION DMRI_EXPECTED_MATLAB_VERSION
+            )
+            unset "${required[@]}"
+            # Config diagnostics remain diagnostics; stdout is reserved for
+            # the fixed, validated import protocol below.
+            # shellcheck disable=SC1090
+            source "${config_path}" 1>&2
+            for name in "${required[@]}"; do
+                builtin printf "%s:" "${name}"
+                builtin printf "%s" "${!name-}" \
+                    | /usr/bin/od -An -v -tx1 \
+                    | /usr/bin/tr -d " \\n"
+                builtin printf "\\n"
+            done
+        ' dmri-software-config "${config_path}"
+    ); then
+        fail "software configuration could not be loaded"
+    fi
+
+    local required=(
+        CONDA_EXE FSLDIR MATLAB_EXECUTABLE
         DMRI_EXPECTED_FSL_VERSION DMRI_EXPECTED_MATLAB_VERSION
-    local previous_err_trap errtrace_was_set=0
-    previous_err_trap=$(trap -p ERR)
-    if [[ "$-" == *E* ]]; then
-        errtrace_was_set=1
-    fi
-    set -E
-    trap 'fail "software configuration could not be loaded"' ERR
-    # shellcheck disable=SC1090
-    source "${config_path}"
-    trap - ERR
-    if [[ -n "${previous_err_trap}" ]]; then
-        eval "${previous_err_trap}"
-    fi
-    if [[ "${errtrace_was_set}" == 0 ]]; then
-        set +E
-    fi
-    local name
-    for name in CONDA_EXE FSLDIR MATLAB_EXECUTABLE \
-        DMRI_EXPECTED_FSL_VERSION DMRI_EXPECTED_MATLAB_VERSION
-    do
-        [[ -n "${!name:-}" ]] || fail "software configuration is missing ${name}"
-        export "${name}"
-    done
+    )
+    local index=0 line name encoded escapes value offset
+    while IFS= read -r line; do
+        [[ "${index}" -lt "${#required[@]}" ]] \
+            || fail "software configuration returned malformed values"
+        name=${line%%:*}
+        encoded=${line#*:}
+        [[ "${name}" == "${required[index]}" && "${line}" == *:* ]] \
+            || fail "software configuration returned malformed values"
+        [[ "${encoded}" =~ ^([0-9a-f][0-9a-f])*$ ]] \
+            || fail "software configuration returned malformed values"
+        escapes=
+        for ((offset = 0; offset < ${#encoded}; offset += 2)); do
+            escapes+="\\x${encoded:offset:2}"
+        done
+        value=
+        if [[ -n "${encoded}" ]]; then
+            printf -v value '%b' "${escapes}"
+        fi
+        [[ -n "${value}" ]] \
+            || fail "software configuration is missing ${name}"
+        export "${name}=${value}"
+        ((index += 1))
+    done <<<"${payload}"
+    [[ "${index}" -eq "${#required[@]}" ]] \
+        || fail "software configuration returned malformed values"
 }
 
 os_release_value() {

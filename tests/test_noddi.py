@@ -202,19 +202,18 @@ def test_prepare_command_compiles_only_missing_mex_and_creates_only_missing_roi(
     assert "CreateROI(" in expression
 
 
-def test_discovery_normalizes_explicit_app_and_parses_probe(
+def test_discovery_uses_bounded_quick_and_full_mex_probes(
     tmp_path, monkeypatch
 ):
     app = tmp_path / "MATLAB_R2024a.app"
     executable = _executable(app / "bin" / "matlab")
     config = _config(tmp_path, app)
     before = os.environ.copy()
-    seen: list[tuple[str, ...]] = []
+    seen: list[tuple[tuple[str, ...], float]] = []
 
     def fake_run(argv, **kwargs):
-        seen.append(tuple(argv))
+        seen.append((tuple(argv), kwargs["timeout"]))
         assert kwargs["shell"] is False
-        assert kwargs["timeout"] > 0
         return subprocess.CompletedProcess(
             argv,
             0,
@@ -233,7 +232,16 @@ def test_discovery_normalizes_explicit_app_and_parses_probe(
     found = discover_matlab(config)
     assert found.executable == executable
     assert found.mexext == "mexa64"
-    assert len(seen) == 1
+    assert [timeout for _, timeout in seen] == [30.0, 300.0]
+    quick_expression = seen[0][0][2]
+    mex_expression = seen[1][0][2]
+    assert "__DMRI_MATLAB_VERSION__" in quick_expression
+    assert "mex.getCompilerConfigurations" in quick_expression
+    assert "dmri_mex_probe" not in quick_expression
+    assert "mex('-silent','-outdir'" in mex_expression
+    assert "addpath(d)" in mex_expression
+    assert "dmri_mex_probe()" in mex_expression
+    assert "__DMRI_MEX_WORKS__" in mex_expression
     assert os.environ == before
 
 

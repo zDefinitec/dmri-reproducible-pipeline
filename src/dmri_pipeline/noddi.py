@@ -42,13 +42,16 @@ _REQUIRED_MAPS = (
     "NODDI_fibredirs_zvec.nii",
 )
 _MEX_STEMS = ("file2mat", "mat2file", "init")
-_PROBE_TIMEOUT_SECONDS = 30.0
-_SENTINELS = {
+_QUICK_PROBE_TIMEOUT_SECONDS = 30.0
+_MEX_PROBE_TIMEOUT_SECONDS = 300.0
+_QUICK_SENTINELS = {
     "version": "__DMRI_MATLAB_VERSION__",
     "mexext": "__DMRI_MEXEXT__",
     "opt_installed": "__DMRI_OPT_INSTALLED__",
     "opt_licensed": "__DMRI_OPT_LICENSED__",
     "mex_configured": "__DMRI_MEX_CONFIGURED__",
+}
+_MEX_SENTINELS = {
     "mex_works": "__DMRI_MEX_WORKS__",
 }
 _MEXEXT = re.compile(r"^mex[A-Za-z0-9_]+$")
@@ -250,35 +253,13 @@ def discover_matlab(config: PipelineConfig) -> MATLABInstallation:
             f"invalid MATLAB installation from {source}: {candidate}"
         )
 
-    probe = _matlab_probe_expression()
-    try:
-        completed = subprocess.run(
-            (str(candidate), "-batch", probe),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_PROBE_TIMEOUT_SECONDS,
-            shell=False,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise MATLABDiscoveryError(
-            f"MATLAB capability probe timed out after {_PROBE_TIMEOUT_SECONDS:g}s"
-        ) from error
-    except (OSError, TypeError, ValueError) as error:
-        raise MATLABDiscoveryError(
-            f"MATLAB capability probe could not launch: {error}"
-        ) from error
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
-        suffix = f": {detail}" if detail else ""
-        raise MATLABDiscoveryError(
-            f"MATLAB capability probe exited with exit code "
-            f"{completed.returncode}{suffix}"
-        )
-    values = _parse_probe(completed.stdout)
+    quick_stdout = _run_matlab_probe(
+        candidate,
+        _matlab_quick_probe_expression(),
+        timeout=_QUICK_PROBE_TIMEOUT_SECONDS,
+        label="capability",
+    )
+    values = _parse_probe(quick_stdout, _QUICK_SENTINELS)
     expected_version = os.environ.get("DMRI_EXPECTED_MATLAB_VERSION")
     if expected_version is not None:
         if not expected_version:
@@ -300,7 +281,14 @@ def discover_matlab(config: PipelineConfig) -> MATLABInstallation:
         raise MATLABDiscoveryError(
             "MATLAB MEX is not callable/configured; setup must run mex -setup C"
         )
-    if values["mex_works"] != "1":
+    mex_stdout = _run_matlab_probe(
+        candidate,
+        _matlab_mex_probe_expression(),
+        timeout=_MEX_PROBE_TIMEOUT_SECONDS,
+        label="MEX compile/load/run capability",
+    )
+    mex_values = _parse_probe(mex_stdout, _MEX_SENTINELS)
+    if mex_values["mex_works"] != "1":
         raise MATLABDiscoveryError(
             "MATLAB C MEX compiler could not compile, load, and run a "
             "temporary probe"
@@ -312,6 +300,39 @@ def discover_matlab(config: PipelineConfig) -> MATLABInstallation:
         optimization_toolbox=True,
         mex_configured=True,
     )
+
+
+def _run_matlab_probe(
+    candidate: Path, expression: str, *, timeout: float, label: str
+) -> str:
+    try:
+        completed = subprocess.run(
+            (str(candidate), "-batch", expression),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            shell=False,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise MATLABDiscoveryError(
+            f"MATLAB {label} probe timed out after {timeout:g}s"
+        ) from error
+    except (OSError, TypeError, ValueError) as error:
+        raise MATLABDiscoveryError(
+            f"MATLAB {label} probe could not launch: {error}"
+        ) from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        suffix = f": {detail}" if detail else ""
+        raise MATLABDiscoveryError(
+            f"MATLAB {label} probe exited with exit code "
+            f"{completed.returncode}{suffix}"
+        )
+    return completed.stdout
 
 
 def choose_noddi_workers(
@@ -756,7 +777,7 @@ def _is_executable_file(path: Path) -> bool:
     return stat.S_ISREG(metadata.st_mode) and os.access(path, os.X_OK)
 
 
-def _matlab_probe_expression() -> str:
+def _matlab_quick_probe_expression() -> str:
     return (
         "fprintf('__DMRI_MATLAB_VERSION__=%s\\n',version);"
         "fprintf('__DMRI_MEXEXT__=%s\\n',mexext);"
@@ -765,7 +786,12 @@ def _matlab_probe_expression() -> str:
         "fprintf('__DMRI_OPT_LICENSED__=%d\\n',license('test','Optimization_Toolbox'));"
         "try,c=mex.getCompilerConfigurations('C','Selected');ok=~isempty(c);"
         "catch,ok=false;end;"
-        "fprintf('__DMRI_MEX_CONFIGURED__=%d\\n',ok);"
+        "fprintf('__DMRI_MEX_CONFIGURED__=%d\\n',ok)"
+    )
+
+
+def _matlab_mex_probe_expression() -> str:
+    return (
         "d=tempname;mkdir(d);cleanup_dir=onCleanup(@()rmdir(d,'s'));"
         "src=fullfile(d,'dmri_mex_probe.c');q=char(34);"
         "code=['#include ' q 'mex.h' q newline "
@@ -782,9 +808,11 @@ def _matlab_probe_expression() -> str:
     )
 
 
-def _parse_probe(stdout: str) -> dict[str, str]:
+def _parse_probe(
+    stdout: str, sentinels: Mapping[str, str]
+) -> dict[str, str]:
     values: dict[str, str] = {}
-    for key, sentinel in _SENTINELS.items():
+    for key, sentinel in sentinels.items():
         matches = re.findall(
             rf"(?m)^{re.escape(sentinel)}=(.*?)\r?$", stdout or ""
         )
@@ -793,12 +821,12 @@ def _parse_probe(stdout: str) -> dict[str, str]:
                 f"MATLAB probe sentinel {sentinel} is missing, duplicate, or malformed"
             )
         values[key] = matches[0].strip()
-    if not _MEXEXT.fullmatch(values["mexext"]):
+    if "mexext" in values and not _MEXEXT.fullmatch(values["mexext"]):
         raise MATLABDiscoveryError("MATLAB probe returned malformed mexext sentinel")
     for key in ("opt_installed", "opt_licensed", "mex_configured", "mex_works"):
-        if values[key] not in {"0", "1"}:
+        if key in values and values[key] not in {"0", "1"}:
             raise MATLABDiscoveryError(
-                f"MATLAB probe sentinel {_SENTINELS[key]} must be 0 or 1"
+                f"MATLAB probe sentinel {sentinels[key]} must be 0 or 1"
             )
     return values
 
