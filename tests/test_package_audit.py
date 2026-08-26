@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -80,15 +81,27 @@ def _finding_categories(audit) -> set[str]:
     return {finding.category for finding in audit.forbidden_matches}
 
 
+def _export_tracked_package_root(tmp_path: Path) -> Path:
+    root = tmp_path / "exported-package"
+    tracked_paths = subprocess.run(
+        ["git", "-C", str(PACKAGE_ROOT), "ls-files", "-z"],
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    for encoded_path in tracked_paths:
+        if not encoded_path:
+            continue
+        relative = Path(os.fsdecode(encoded_path))
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PACKAGE_ROOT / relative, destination)
+    return root
+
+
 def test_exported_package_audit_is_clean_and_contains_only_the_historical_atlas(
     tmp_path: Path,
 ) -> None:
-    exported_root = tmp_path / "exported-package"
-    shutil.copytree(
-        PACKAGE_ROOT,
-        exported_root,
-        ignore=shutil.ignore_patterns(".git"),
-    )
+    exported_root = _export_tracked_package_root(tmp_path)
     audit = _audit(exported_root)
 
     assert audit.nifti_files == [ATLAS_RELATIVE]
