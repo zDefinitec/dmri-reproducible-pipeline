@@ -1,6 +1,7 @@
 /config/subject.yaml
 /config/inputs/
 /outputs/
+/.worktrees/
 
 .DS_Store
 .pytest_cache/
