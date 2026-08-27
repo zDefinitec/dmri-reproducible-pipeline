@@ -27,7 +27,6 @@ from .fsl import (
     ExternalCommandError,
     FSLContext,
     FSLInstallation,
-    build_applytopup_command,
     build_bet_command,
     build_eddy_command,
     build_eddy_quad_command,
@@ -528,9 +527,6 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
         )
         log = work / "topup_fsl.log"
         run_fsl_command(build_topup_command(fsl_context), log, installation.environment)
-        run_fsl_command(
-            build_applytopup_command(fsl_context), log, installation.environment
-        )
         _write_topup_metrics(fsl_context, work / "topup_metrics.json")
 
     def bet_action(work: Path) -> None:
@@ -1390,7 +1386,6 @@ def _validate_topup_outputs(
         "topup_PA_AP_b0_movpar.txt",
         "topup_corrected_b0s.nii.gz",
         "topup_field_Hz.nii.gz",
-        "applytopup_corrected_b0s.nii.gz",
         "topup_metrics.json",
         "topup_fsl.log",
     )
@@ -1427,16 +1422,12 @@ def _validate_topup_outputs(
         merged,
         "TOPUP merged b0 volume order",
     )
-    for name, label in (
-        ("topup_corrected_b0s.nii.gz", "TOPUP corrected b0 output"),
-        ("applytopup_corrected_b0s.nii.gz", "APPLYTOPUP corrected b0 output"),
-    ):
-        _validate_finite_nifti(
-            work / name,
-            label,
-            (*spatial, combined),
-            expected_affine,
-        )
+    _validate_finite_nifti(
+        work / "topup_corrected_b0s.nii.gz",
+        "TOPUP corrected b0 output",
+        (*spatial, combined),
+        expected_affine,
+    )
 
     fieldcoef = _validate_finite_nifti(
         work / "topup_PA_AP_b0_fieldcoef.nii.gz",
@@ -2665,7 +2656,6 @@ def _dry_run_commands(
             "-m",
         ],
         build_topup_command(topup_context),
-        build_applytopup_command(topup_context),
         build_topup_mean_command(bet_context),
         build_bet_command(bet_context),
         build_eddy_command(eddy_context),

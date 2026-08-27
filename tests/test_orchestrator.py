@@ -415,7 +415,6 @@ def _populate_valid_topup(work: Path, subject_config) -> None:
         ("nodif_AP_all.nii.gz", ap),
         ("PA_AP_b0.nii.gz", merged),
         ("topup_corrected_b0s.nii.gz", merged + 0.5),
-        ("applytopup_corrected_b0s.nii.gz", merged + 1.0),
     ):
         _save_image(work / name, values, affine)
     _save_image(
@@ -1828,11 +1827,11 @@ def test_dry_run_commands_use_real_work_paths_and_absolute_early_bet(
     rendered = "\n".join("\0".join(argv) for argv in commands)
     for stage in ("03_topup", "04_bet", "05_eddy", "08_noddi", "09_jhu_48roi"):
         assert str(root / ".work" / stage) in rendered
-    assert commands[3][1] == str(
+    assert commands[2][1] == str(
         root / "03_topup" / "topup_corrected_b0s"
     )
-    assert commands[3][-1] == str(root / ".work" / "04_bet" / "hifi_nodif")
-    eddy_command = commands[5]
+    assert commands[2][-1] == str(root / ".work" / "04_bet" / "hifi_nodif")
+    eddy_command = commands[4]
     assert f"--mask={root / '04_bet' / 'nodif_brain_mask.nii.gz'}" in eddy_command
     assert f"--topup={root / '03_topup' / 'topup_PA_AP_b0'}" in eddy_command
     assert f"--out={root / '.work' / '05_eddy' / 'eddy_unwarped_images'}" in eddy_command
@@ -2000,11 +1999,8 @@ def _install_real_plan_test_boundaries(
                 np.zeros((values.shape[3], 6)),
             )
         elif executable == "applytopup":
-            merged = nib.load(work / "PA_AP_b0.nii.gz")
-            _save_image(
-                work / "applytopup_corrected_b0s.nii.gz",
-                np.asarray(merged.dataobj, dtype=np.float32) + 1.0,
-                affine,
+            pytest.fail(
+                "03_topup must not combine unequal PA/AP series with applytopup"
             )
         elif executable == "fslmaths":
             corrected = nib.load(Path(str(argv[1]) + ".nii.gz"))
@@ -2185,6 +2181,12 @@ def test_real_public_plan_include_with_flags_completes_then_skips_current_rerun(
     first = run_pipeline(subject_config, "run")
     calls_after_first = tuple(action_calls)
     second = run_pipeline(subject_config, "run")
+    audit = audit_inputs(subject_config)
+    corrected = nib.load(
+        subject_config.subject_output
+        / "03_topup"
+        / "topup_corrected_b0s.nii.gz"
+    )
     decision = json.loads(
         (
             subject_config.subject_output
@@ -2194,6 +2196,11 @@ def test_real_public_plan_include_with_flags_completes_then_skips_current_rerun(
     )
 
     assert first.status == "COMPLETE"
+    assert len(audit.b0_indices) == 1
+    assert audit.ap_b0_count == 2
+    assert action_calls.count("fsl:topup") == 1
+    assert "fsl:applytopup" not in action_calls
+    assert corrected.shape == (*audit.pa_shape[:3], 3)
     assert not (
         subject_config.subject_output
         / "05_eddy"
