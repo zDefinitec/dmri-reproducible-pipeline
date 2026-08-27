@@ -30,7 +30,8 @@ _dmri_run_pipeline_main() {
         return 30
     fi
 
-    exec "${conda_bin}" run -n dmri-repro python -m dmri_pipeline.cli "$@"
+    exec "${conda_bin}" run --no-capture-output -n dmri-repro \
+        python -u -m dmri_pipeline.cli "$@"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
