@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import errno
 import hashlib
 import json
 from pathlib import Path
@@ -311,6 +312,183 @@ def test_final_appearing_immediately_before_promotion_is_not_clobbered(
     assert (
         stage_runner.context.subject_root / ".work" / "01_test" / "result.txt"
     ).exists()
+
+
+def _make_failing_linux_libc(error_number: int):
+    class FailingRenameAt2:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *args) -> int:
+            state_module.ctypes.set_errno(error_number)
+            return -1
+
+    class FakeLibc:
+        renameat2 = FailingRenameAt2()
+
+    return FakeLibc()
+
+
+@pytest.mark.parametrize("unsupported_errno", [errno.ENOTSUP, errno.EINVAL])
+def test_linux_nfs_unsupported_renameat2_promotes_without_clobbering(
+    stage_runner: StageRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    unsupported_errno: int,
+) -> None:
+    monkeypatch.setattr(state_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        state_module.ctypes,
+        "CDLL",
+        lambda *args, **kwargs: _make_failing_linux_libc(unsupported_errno),
+    )
+
+    outcome = stage_runner.run(stage_spec_that_writes())
+
+    assert outcome.status == "completed"
+    assert (outcome.directory / "result.txt").read_text(encoding="utf-8") == "ok\n"
+    assert outcome.record_path.is_file()
+    assert not stage_runner.work_dir("01_test").exists()
+
+
+def test_linux_missing_renameat2_uses_directory_reservation(
+    stage_runner: StageRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class LibcWithoutRenameAt2:
+        pass
+
+    monkeypatch.setattr(state_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        state_module.ctypes,
+        "CDLL",
+        lambda *args, **kwargs: LibcWithoutRenameAt2(),
+    )
+
+    outcome = stage_runner.run(stage_spec_that_writes())
+
+    assert outcome.status == "completed"
+    assert (outcome.directory / "result.txt").read_text(encoding="utf-8") == "ok\n"
+    assert outcome.record_path.is_file()
+    assert not stage_runner.work_dir("01_test").exists()
+
+
+@pytest.mark.parametrize("unsupported_errno", [errno.ENOTSUP, errno.EINVAL])
+def test_linux_nfs_fallback_preserves_empty_final_directory_race(
+    stage_runner: StageRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    unsupported_errno: int,
+) -> None:
+    final_dir = stage_runner.final_dir("01_test")
+    real_entry_exists = state_module._entry_exists
+    final_checks = 0
+    raced_inode: int | None = None
+
+    def inject_empty_race(path: Path) -> bool:
+        nonlocal final_checks, raced_inode
+        if path == final_dir:
+            final_checks += 1
+            if final_checks == 2:
+                final_dir.mkdir(parents=True)
+                raced_inode = final_dir.stat().st_ino
+                return False
+        return real_entry_exists(path)
+
+    monkeypatch.setattr(state_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        state_module.ctypes,
+        "CDLL",
+        lambda *args, **kwargs: _make_failing_linux_libc(unsupported_errno),
+    )
+    monkeypatch.setattr(state_module, "_entry_exists", inject_empty_race)
+
+    with pytest.raises(StageStateError, match=r"appeared during promotion"):
+        stage_runner.run(stage_spec_that_writes())
+
+    assert raced_inode is not None
+    assert final_dir.stat().st_ino == raced_inode
+    assert list(final_dir.iterdir()) == []
+    work_dir = stage_runner.work_dir("01_test")
+    assert (work_dir / "result.txt").read_text(encoding="utf-8") == "ok\n"
+    assert (work_dir / ".stage_complete.json").is_file()
+
+
+def test_linux_nfs_fallback_reports_populated_reservation_as_race(
+    stage_runner: StageRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final_dir = stage_runner.final_dir("01_test")
+    real_replace = state_module.os.replace
+
+    def populate_and_reject(source: Path, destination: Path) -> None:
+        if Path(destination) != final_dir:
+            real_replace(source, destination)
+            return
+        (destination / "racer.txt").write_text("preserve\n", encoding="utf-8")
+        raise OSError(errno.ENOTEMPTY, "destination is no longer empty", destination)
+
+    monkeypatch.setattr(state_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        state_module.ctypes,
+        "CDLL",
+        lambda *args, **kwargs: _make_failing_linux_libc(errno.ENOTSUP),
+    )
+    monkeypatch.setattr(state_module.os, "replace", populate_and_reject)
+
+    with pytest.raises(StageStateError, match=r"appeared during promotion"):
+        stage_runner.run(stage_spec_that_writes())
+
+    assert (final_dir / "racer.txt").read_text(encoding="utf-8") == "preserve\n"
+    work_dir = stage_runner.work_dir("01_test")
+    assert (work_dir / "result.txt").read_text(encoding="utf-8") == "ok\n"
+    assert (work_dir / ".stage_complete.json").is_file()
+
+
+@pytest.mark.parametrize("reported_errno", [errno.EIO, errno.EEXIST, errno.ENOTEMPTY])
+def test_linux_nfs_reconciles_rename_that_succeeded_but_reported_error(
+    stage_runner: StageRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    reported_errno: int,
+) -> None:
+    final_dir = stage_runner.final_dir("01_test")
+    real_replace = state_module.os.replace
+
+    def replace_then_report_error(source: Path, destination: Path) -> None:
+        real_replace(source, destination)
+        if Path(destination) != final_dir:
+            return
+        raise OSError(reported_errno, "simulated lost NFS reply", destination)
+
+    monkeypatch.setattr(state_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        state_module.ctypes,
+        "CDLL",
+        lambda *args, **kwargs: _make_failing_linux_libc(errno.ENOTSUP),
+    )
+    monkeypatch.setattr(state_module.os, "replace", replace_then_report_error)
+
+    outcome = stage_runner.run(stage_spec_that_writes())
+
+    assert outcome.status == "completed"
+    assert (outcome.directory / "result.txt").read_text(encoding="utf-8") == "ok\n"
+    assert outcome.record_path.is_file()
+    assert not stage_runner.work_dir("01_test").exists()
+
+
+def test_linux_nfs_fallback_does_not_mask_unrelated_rename_error(
+    stage_runner: StageRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(state_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        state_module.ctypes,
+        "CDLL",
+        lambda *args, **kwargs: _make_failing_linux_libc(errno.EIO),
+    )
+
+    with pytest.raises(StageStateError, match=r"Cannot atomically promote"):
+        stage_runner.run(stage_spec_that_writes())
+
+    assert not stage_runner.final_dir("01_test").exists()
+    work_dir = stage_runner.work_dir("01_test")
+    assert (work_dir / "result.txt").read_text(encoding="utf-8") == "ok\n"
+    assert (work_dir / ".stage_complete.json").is_file()
 
 
 def test_invalidate_from_archives_affected_final_and_work_directories(

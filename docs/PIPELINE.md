@@ -1,8 +1,12 @@
 # Pipeline stages
 
 The public stage order is fixed. Each stage validates its complete inputs,
-writes into a private work directory, validates outputs, and atomically
-promotes a final directory with `.stage_complete.json`.
+writes into a private work directory, and validates outputs before promotion.
+Filesystems with a native no-replace rename publish the final directory in one
+operation. On NFS without that extension, the runner atomically reserves the
+exact final name with an empty private directory, then atomically replaces its
+own reservation with the validated work tree. Directory existence alone does
+not mean completion; only an exact-current `.stage_complete.json` does.
 
 1. `00_input_audit` — input identity, NIfTI, gradients, acquisition, and
    software-independent validation.
@@ -34,6 +38,12 @@ outputs, and manifest are exact-current:
 ```bash
 ./run_pipeline.sh config/subject.yaml
 ```
+
+Run only one pipeline invocation per subject at a time, and do not run
+`--force-stage` or invalidate that subject concurrently. This is part of the
+NFS reservation safety model. An interruption during NFS promotion can leave
+an empty noncurrent final directory plus the intact work directory; explicit
+forcing archives both before rerunning that stage.
 
 `--dry-run` validates and prints stage status and exact external argv without
 writing stages. `--force-stage NAME` is valid only for a normal run. It

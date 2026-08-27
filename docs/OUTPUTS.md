@@ -4,7 +4,8 @@ Outputs live under `<output_root>/<subject_id>/`. The 15 final stage
 directories use the names in `PIPELINE.md`; `.work` is transaction space and
 is never part of a complete result. Every complete stage has a
 `.stage_complete.json` record binding inputs, parameters, software,
-resources, and output hashes.
+resources, and output hashes. A directory without a valid exact-current record
+is incomplete, including an empty NFS promotion reservation.
 
 Important products include:
 

@@ -29,6 +29,18 @@ it verifies but does not install MATLAB, a compiler, or a licence.
 The NIfTI `file2mat`, `mat2file`, and `init` MEX modules are compiled locally
 inside the NODDI stage. Never copy a MEX binary from another architecture.
 
+## NFS stage promotion
+
+Some NFS4 mounts do not implement Linux `renameat2(RENAME_NOREPLACE)`. The
+runner falls back to an exact-name empty-directory reservation and refuses a
+final path already present when that reservation is acquired. Run only one
+invocation per subject, and do not concurrently force or invalidate it; NFS
+cannot conditionally rename against a reservation removed by another process
+with permission to mutate the subject directory. If an interruption leaves
+both an empty noncurrent final directory and the intact `.work` directory,
+resolve the interruption and use `--force-stage NAME` to archive both before
+restarting that stage.
+
 ## NODDI workers
 
 Normal reruns validate preparation and completed worker hashes, resume valid

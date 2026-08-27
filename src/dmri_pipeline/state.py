@@ -358,11 +358,15 @@ class StageRunner:
         try:
             _rename_no_replace(work_dir, final_dir)
         except FileExistsError as error:
+            if not _entry_exists(work_dir) and self.is_current(spec):
+                return StageOutcome(spec.name, "completed", final_dir, record_path)
             raise StageStateError(
                 f"Stage {spec.name!r} final directory appeared during promotion; "
                 "it was preserved and must be force/invalidated before rerunning"
             ) from error
         except OSError as error:
+            if not _entry_exists(work_dir) and self.is_current(spec):
+                return StageOutcome(spec.name, "completed", final_dir, record_path)
             raise StageStateError(
                 f"Cannot atomically promote stage {spec.name!r} without clobbering"
             ) from error
@@ -735,12 +739,9 @@ def _rename_no_replace(source: Path, destination: Path) -> None:
     elif sys.platform.startswith("linux"):
         try:
             rename_at = libc.renameat2
-        except AttributeError as error:
-            raise OSError(
-                errno.ENOTSUP,
-                "atomic no-replace rename is unavailable",
-                destination,
-            ) from error
+        except AttributeError:
+            _rename_with_directory_reservation(source, destination)
+            return
         rename_at.argtypes = [
             ctypes.c_int,
             ctypes.c_char_p,
@@ -764,7 +765,36 @@ def _rename_no_replace(source: Path, destination: Path) -> None:
         raise FileExistsError(
             error_number, os.strerror(error_number), destination
         )
+    if error_number in {
+        errno.EINVAL,
+        errno.ENOSYS,
+        errno.ENOTSUP,
+        errno.EOPNOTSUPP,
+    }:
+        _rename_with_directory_reservation(source, destination)
+        return
     raise OSError(error_number, os.strerror(error_number), destination)
+
+
+def _rename_with_directory_reservation(source: Path, destination: Path) -> None:
+    """Promote on filesystems without an atomic no-replace rename operation.
+
+    Creating the exact destination directory is the no-clobber claim for the
+    supported single-runner-per-subject model.  A regular rename may then
+    replace only that empty reservation, so a destination already present when
+    claimed is preserved while the completed source still appears in one
+    atomic rename.  A crash before the rename leaves an empty, noncurrent final
+    directory and the complete work directory, which fails closed.
+    """
+    destination.mkdir(mode=0o700)
+    try:
+        os.replace(source, destination)
+    except OSError as error:
+        if error.errno in (errno.EEXIST, errno.ENOTEMPTY):
+            raise FileExistsError(
+                error.errno, os.strerror(error.errno), destination
+            ) from error
+        raise
 
 
 def _entry_exists(path: Path) -> bool:
