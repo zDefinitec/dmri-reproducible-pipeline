@@ -977,6 +977,7 @@ def test_topup_has_exact_pa_first_input_and_output_prefix_wiring(
         f"--imain={fsl_context.merged_b0}",
         f"--datain={fsl_context.acqparams_topup}",
         f"--config={fsl_context.fsldir / 'etc/flirtsch/b02b0.cnf'}",
+        "--nthr=4",
         f"--out={fsl_context.topup_prefix}",
         f"--iout={fsl_context.topup_corrected_b0s}",
         f"--fout={fsl_context.field_hz_prefix}",

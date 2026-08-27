@@ -1090,6 +1090,7 @@ def build_topup_command(context: FSLContext) -> list[str]:
         f"--imain={context.merged_b0}",
         f"--datain={context.acqparams_topup}",
         f"--config={config}",
+        "--nthr=4",
         f"--out={context.topup_prefix}",
         f"--iout={context.topup_corrected_b0s}",
         f"--fout={context.field_hz_prefix}",
