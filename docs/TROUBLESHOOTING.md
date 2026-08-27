@@ -6,9 +6,10 @@ Confirm that the current Rocky Linux 9.7 x86_64 server shell exports
 `DMRI_SOFTWARE_CONFIG` to a private absolute configuration file. Set `FSLDIR`
 there, unless a subject-specific `tools.fsldir` override is required. Run
 `./setup_rocky.sh --check`. Missing TOPUP, BET, registration tools,
-`eddy_openmp`/`eddy`, `eddy_quad`, configs, or the standard FA image is a
-dependency error (exit 30). This package uses CPU EDDY only; it does not
-configure CUDA EDDY. EDDY or EDDY QUAD process failure is exit 40, while
+`eddy_openmp`/`eddy`, an `eddy_cpu` backend required by the `eddy` launcher,
+`eddy_quad`, configs, or the standard FA image is a dependency error (exit
+30). This package selects CPU EDDY directly; it does not configure or audit
+unused CUDA EDDY backends. EDDY or EDDY QUAD process failure is exit 40, while
 malformed scientific output is exit 50. Resolve dependency errors before
 rerunning.
 

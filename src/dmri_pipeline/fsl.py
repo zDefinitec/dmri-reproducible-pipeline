@@ -471,14 +471,31 @@ def _validate_installation(fsldir: Path) -> FSLInstallation:
         tools[name] = executable
 
     openmp = fsldir / "bin" / "eddy_openmp"
-    cpu_eddy = fsldir / "bin" / "eddy"
+    eddy_command = fsldir / "bin" / "eddy"
     if _is_executable_regular_file(openmp):
         eddy = openmp
-    elif _is_executable_regular_file(cpu_eddy):
-        eddy = cpu_eddy
+    elif _is_executable_regular_file(eddy_command):
+        launcher = _read_stable_runtime_prefix(
+            eddy_command, "selected EDDY launcher"
+        )
+        if launcher.startswith(b"#!"):
+            if launcher.splitlines()[0] != b"#!/usr/bin/env fslpython":
+                raise FSLDiscoveryError(
+                    "selected script EDDY must use the FSL fslpython "
+                    "interpreter"
+                )
+            cpu_backend = fsldir / "bin" / "eddy_cpu"
+            if not _is_executable_regular_file(cpu_backend):
+                raise FSLDiscoveryError(
+                    "selected EDDY launcher is missing executable CPU backend: "
+                    "eddy_cpu"
+                )
+            eddy = cpu_backend
+        else:
+            eddy = eddy_command
     else:
         raise FSLDiscoveryError(
-            f"missing executable regular file: {openmp.name} or {cpu_eddy.name}"
+            f"missing executable regular file: {openmp.name} or {eddy_command.name}"
         )
 
     resources: dict[str, Path] = {}

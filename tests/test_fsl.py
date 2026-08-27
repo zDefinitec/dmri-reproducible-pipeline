@@ -346,7 +346,22 @@ def test_discovery_prefers_eddy_openmp(fake_fsldir: Path):
 def test_discovery_falls_back_to_cpu_eddy(tmp_path: Path):
     fsldir = _fake_fsl(tmp_path / "fsl", include_openmp=False)
     installation = discover_fsl(SimpleNamespace(fsldir=fsldir))
-    assert installation.eddy == fsldir / "bin" / "eddy"
+    assert installation.eddy == fsldir / "bin" / "eddy_cpu"
+
+
+def test_discovery_bypasses_large_cuda_backends_for_cpu_only_eddy(
+    tmp_path: Path,
+) -> None:
+    fsldir = _fake_fsl(tmp_path / "fsl", include_openmp=False)
+    unused_cuda = fsldir / "bin" / "eddy_cuda11.0"
+    with unused_cuda.open("wb") as handle:
+        handle.truncate(64 * 1024 * 1024 + 1)
+    unused_cuda.chmod(0o755)
+
+    installation = discover_fsl(SimpleNamespace(fsldir=fsldir))
+
+    assert installation.eddy == fsldir / "bin" / "eddy_cpu"
+    assert "bin/eddy_cuda11.0" not in installation.runtime_material_files
 
 
 def test_discovery_records_bounded_relative_runtime_material_files(
@@ -368,8 +383,6 @@ def test_discovery_records_bounded_relative_runtime_material_files(
         "bin/fslstats",
         "bin/fslsplit",
         "bin/slicer",
-        "bin/eddy_cpu",
-        "bin/find_cuda_exe",
         "bin/fslpython",
         "bin/python3.12",
         "lib/python3.12/site-packages/eddy_qc/QUAD/quad.py",
@@ -394,6 +407,8 @@ def test_discovery_records_bounded_relative_runtime_material_files(
         "lib/python3.12/site-packages/matplotlib-3.9.4.dist-info/METADATA",
         "lib/python3.12/site-packages/seaborn-0.13.2.dist-info/METADATA",
     }.issubset(material)
+    assert "bin/eddy_cpu" not in material
+    assert "bin/find_cuda_exe" not in material
     assert all(not Path(relative).is_absolute() for relative in material)
     assert all(path.is_file() and not path.is_symlink() for path in material.values())
 

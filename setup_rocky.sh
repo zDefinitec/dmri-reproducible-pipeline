@@ -51,7 +51,25 @@ check_fsl() {
     if [[ -x "${root}/bin/eddy_openmp" ]]; then
         echo "OK: FSL EDDY eddy_openmp"
     elif [[ -x "${root}/bin/eddy" ]]; then
-        echo "OK: FSL EDDY eddy"
+        local eddy_header eddy_magic
+        eddy_magic=$(LC_ALL=C od -An -tx1 -N2 "${root}/bin/eddy") \
+            || fail "could not inspect FSL EDDY executable: eddy"
+        eddy_magic=${eddy_magic//[[:space:]]/}
+        [[ -n "${eddy_magic}" ]] \
+            || fail "FSL EDDY executable is empty: eddy"
+        if [[ "${eddy_magic}" == "2321" ]]; then
+            eddy_header=
+            IFS= read -r eddy_header < "${root}/bin/eddy" \
+                || [[ -n "${eddy_header}" ]] \
+                || fail "could not read FSL EDDY launcher: eddy"
+            [[ "${eddy_header}" == '#!/usr/bin/env fslpython' ]] \
+                || fail "selected script FSL EDDY must use fslpython"
+            [[ -x "${root}/bin/eddy_cpu" ]] \
+                || fail "FSL EDDY launcher is missing CPU backend: eddy_cpu"
+            echo "OK: FSL EDDY eddy_cpu"
+        else
+            echo "OK: FSL EDDY eddy"
+        fi
     else
         fail "missing required FSL EDDY executable: eddy_openmp or eddy"
     fi

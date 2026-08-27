@@ -489,8 +489,16 @@ def _setup_check_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
     (fsldir / "bin").mkdir(parents=True)
     for name in FSL_COMMANDS:
         executable = fsldir / "bin" / name
-        executable.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        body = (
+            "#!/usr/bin/env fslpython\n"
+            if name == "eddy"
+            else "#!/usr/bin/env bash\nexit 0\n"
+        )
+        executable.write_text(body, encoding="utf-8")
         executable.chmod(0o755)
+    eddy_cpu = fsldir / "bin" / "eddy_cpu"
+    eddy_cpu.write_bytes(b"\x7fELFsynthetic-eddy-cpu")
+    eddy_cpu.chmod(0o755)
     for relative in (
         "etc/flirtsch/b02b0.cnf",
         "etc/flirtsch/b02b0_1.cnf",
@@ -546,6 +554,62 @@ def test_setup_check_names_a_missing_fsl_component(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "applywarp" in result.stderr
+
+
+def test_setup_check_requires_cpu_backend_for_eddy_launcher(
+    tmp_path: Path,
+) -> None:
+    environment, fsldir = _setup_check_environment(tmp_path)
+    (fsldir / "bin" / "eddy_cpu").unlink()
+
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
+        cwd=tmp_path,
+        environment=environment,
+    )
+
+    assert result.returncode != 0
+    assert "eddy_cpu" in result.stderr
+
+
+def test_setup_check_accepts_native_eddy_without_a_newline(
+    tmp_path: Path,
+) -> None:
+    environment, fsldir = _setup_check_environment(tmp_path)
+    native_eddy = fsldir / "bin" / "eddy"
+    native_eddy.write_bytes(b"\x7fELFsynthetic-native-eddy")
+    native_eddy.chmod(0o755)
+
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
+        cwd=tmp_path,
+        environment=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "OK: FSL EDDY eddy" in result.stdout
+
+
+def test_setup_check_rejects_unsupported_eddy_script(
+    tmp_path: Path,
+) -> None:
+    environment, fsldir = _setup_check_environment(tmp_path)
+    (fsldir / "bin" / "eddy").write_text(
+        "#!/usr/bin/env bash\nexit 0\n",
+        encoding="utf-8",
+    )
+
+    result = _run_internal_wrapper(
+        "setup_rocky.sh",
+        ["--check"],
+        cwd=tmp_path,
+        environment=environment,
+    )
+
+    assert result.returncode != 0
+    assert "fslpython" in result.stderr
 
 
 def test_setup_check_uses_matlab_executable_from_software_config(

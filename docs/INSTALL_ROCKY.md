@@ -9,6 +9,8 @@ external products remain the recipient's responsibility.
 
 FSL must provide `topup`, `applytopup`, `bet`, `fslmaths`, `eddy_quad`,
 `flirt`, `fnirt`, `invwarp`, `applywarp`, and either `eddy_openmp` or `eddy`.
+When `eddy` is the FSL CPU/GPU launcher, its executable `eddy_cpu` backend is
+also required and is selected directly; CUDA backends are not used.
 It must also provide the TOPUP/FNIRT configuration and standard FA files
 checked by the script.
 
