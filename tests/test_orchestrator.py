@@ -120,12 +120,13 @@ def test_missing_explicit_plan_source_has_typed_dependency_semantics(
 def test_build_plan_wires_canonical_and_rotated_gradients(subject_config) -> None:
     plan = {stage.name: stage for stage in build_plan(subject_config)}
     root = subject_config.subject_output
+    timing = root / "05_eddy" / "eddy_timing.json"
+    timing_source = Path(orchestrator.__file__).with_name("eddy_timing.py")
 
     assert root / "00_input_audit" / "bvecs_fsl_3xN" in plan["05_eddy"].input_paths
-    assert (
-        Path(orchestrator.__file__).with_name("eddy_timing.py")
-        in plan["05_eddy"].source_paths
-    )
+    assert timing_source in plan["05_eddy"].source_paths
+    assert timing in plan["report"].input_paths
+    assert timing_source in plan["report"].source_paths
     rotated = root / "05_eddy" / "eddy_unwarped_images.eddy_rotated_bvecs"
     for name in ("06_dti", "07_dki", "07_dki_direct", "08_noddi"):
         assert rotated in plan[name].input_paths
@@ -2082,6 +2083,9 @@ def test_preoutput_plan_tracks_more_than_twelve_union_selected_detail_volumes(
     assert second.status == "skipped"
     assert len(captured_contexts) == 1
     assert set(captured_contexts[0].stripe_detail_files) == expected
+    assert captured_contexts[0].eddy_timing_json == (
+        config.subject_output / "05_eddy" / "eddy_timing.json"
+    )
     assert all(path.is_file() for path in expected)
     assert report_runner.is_current(report)
     record = json.loads(first.record_path.read_text(encoding="utf-8"))

@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from dmri_pipeline.audit import audit_inputs, write_input_audit
+from dmri_pipeline.eddy_timing import EddyTimingError
 from dmri_pipeline.report import (
     REPORT_JSON_KEYS,
     ReportContext,
@@ -158,6 +159,23 @@ def make_report_case(subject_config) -> SyntheticReportCase:
         + "\n",
         encoding="utf-8",
     )
+    eddy_dir = subject_root / "05_eddy"
+    eddy_dir.mkdir(exist_ok=True)
+    eddy_timing = eddy_dir / "eddy_timing.json"
+    eddy_timing.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "eddy_command_seconds": 7200.0,
+                "eddy_quad_seconds": 240.0,
+                "stage_action_seconds": 7441.0,
+                "eddy_command_includes_cnr_maps": True,
+                "eddy_command_includes_residuals": True,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     summary_dir = subject_root / "10_summary"
     package_root = Path(__file__).parents[1]
     summary = summarize_subject(
@@ -256,6 +274,7 @@ def make_report_case(subject_config) -> SyntheticReportCase:
         eddy_outlier_map=qc.context.eddy_outlier_map,
         eddy_outlier_report=outlier_report,
         eddy_quad_json=eddy_quad,
+        eddy_timing_json=eddy_timing,
         noddi_error_codes=noddi_errors,
         summary_json=summary.summary_json,
         global_csv=summary.global_csv,
@@ -317,6 +336,11 @@ def test_final_report_has_exact_outputs_schema_six_pages_and_safe_links(
     assert payload["eddy"]["observed_outlier_slice_count"] == 3
     assert payload["eddy"]["reported_outlier_slice_count"] == 3
     assert payload["eddy"]["affected_volume_count"] == 2
+    assert payload["eddy"]["runtime_seconds"] == {
+        "eddy_command_including_cnr_and_residuals": 7200.0,
+        "eddy_quad": 240.0,
+        "stage_action_total": 7441.0,
+    }
     assert payload["noddi"]["error_code_histogram"] == [
         {"error_code": 0, "voxel_count": 215},
         {"error_code": 1, "voxel_count": 1},
@@ -343,6 +367,12 @@ def test_final_report_has_exact_outputs_schema_six_pages_and_safe_links(
     assert "- High volume count: `1`" in markdown
     assert "- Ambiguous volume count: `1`" in markdown
     assert "- Maximum outlier slices in one volume: `2`" in markdown
+    assert (
+        "| EDDY command (includes CNR maps and residuals) | seconds | 7200 |"
+        in markdown
+    )
+    assert "| EDDY QUAD | seconds | 240 |" in markdown
+    assert "| 05_eddy stage action total | seconds | 7441 |" in markdown
     assert "17 global" not in markdown  # values are listed explicitly, not summarized away
     for link in re.findall(r"\[[^\]]+\]\(([^)]+)\)", markdown):
         assert (report_case.context.output_directory / link).resolve().exists()
@@ -419,6 +449,40 @@ def test_report_detects_input_mutation_and_leaves_no_partial_outputs(
     monkeypatch.setattr(report_module, "_render_pdf", mutate)
     with pytest.raises(ReportError, match="changed"):
         write_final_report(report_case.context)
+    assert list(report_case.context.output_directory.iterdir()) == []
+
+
+def test_report_detects_eddy_timing_mutation_and_leaves_no_partial_outputs(
+    report_case: SyntheticReportCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dmri_pipeline.report as report_module
+
+    original = report_module._render_pdf
+
+    def mutate(context, data, path):
+        original(context, data, path)
+        context.eddy_timing_json.write_text(
+            context.eddy_timing_json.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(report_module, "_render_pdf", mutate)
+    with pytest.raises(ReportError, match="changed"):
+        write_final_report(report_case.context)
+    assert list(report_case.context.output_directory.iterdir()) == []
+
+
+def test_report_wraps_strict_eddy_timing_validation_error(
+    report_case: SyntheticReportCase,
+) -> None:
+    report_case.context.eddy_timing_json.write_text(
+        "{not-json", encoding="utf-8"
+    )
+
+    with pytest.raises(ReportError, match="EDDY timing") as captured:
+        write_final_report(report_case.context)
+
+    assert isinstance(captured.value.__cause__, EddyTimingError)
     assert list(report_case.context.output_directory.iterdir()) == []
 
 
@@ -1039,6 +1103,12 @@ def test_pdf_summary_builders_are_structured_and_repr_free(
             *report_module._pdf_page5_summary(data.payload),
         )
     text = "\n".join(summaries)
+    assert "EDDY command" in text
+    assert "7200" in text
+    assert "EDDY QUAD" in text
+    assert "240" in text
+    assert "stage action total" in text
+    assert "7441" in text
     assert "OrderedDict" not in text
     assert "mappingproxy" not in text
     assert "[{" not in text
