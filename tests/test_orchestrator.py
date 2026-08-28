@@ -54,6 +54,17 @@ EXPECTED_ORDER = (
     "report",
 )
 
+BASE = {
+    "nibabel": "base-nibabel",
+    "numpy": "base-numpy",
+    "python": "base-python",
+}
+FSL = {"fsl_eddy": "fake-eddy", "fsl_eddy_sha256": "fake-fsl-sha256"}
+MATLAB = {
+    "matlab": "fake-matlab",
+    "matlab_executable_sha256": "fake-matlab-sha256",
+}
+
 
 @pytest.fixture(autouse=True)
 def _isolate_subject_lock_anchor(
@@ -1446,6 +1457,84 @@ def test_software_provenance_tracks_every_material_fsl_and_matlab_file(
         path.write_bytes(original)
 
 
+def test_stage_software_provenance_discovers_only_the_stage_dependency(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fsl_installation = object()
+    matlab_installation = object()
+    monkeypatch.setattr(orchestrator, "_base_software_provenance", lambda: BASE)
+    monkeypatch.setattr(
+        orchestrator,
+        "_fsl_software_provenance",
+        lambda installation: FSL
+        if installation is fsl_installation
+        else pytest.fail("unexpected FSL installation"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_matlab_software_provenance",
+        lambda installation: MATLAB
+        if installation is matlab_installation
+        else pytest.fail("unexpected MATLAB installation"),
+        raising=False,
+    )
+
+    def fresh_runtime_and_trace() -> tuple[orchestrator._Runtime, list[str]]:
+        discoveries: list[str] = []
+        monkeypatch.setattr(
+            orchestrator,
+            "discover_fsl",
+            lambda config: discoveries.append("fsl") or fsl_installation,
+        )
+        monkeypatch.setattr(
+            orchestrator,
+            "discover_matlab",
+            lambda config: discoveries.append("matlab") or matlab_installation,
+        )
+        return orchestrator._Runtime(subject_config), discoveries
+
+    runtime, discoveries = fresh_runtime_and_trace()
+    assert (
+        orchestrator._stage_software_provenance(runtime, "00_input_audit")
+        == BASE
+    )
+    assert discoveries == []
+
+    assert orchestrator._stage_software_provenance(runtime, "05_eddy") == BASE | FSL
+    assert discoveries == ["fsl"]
+
+    runtime, discoveries = fresh_runtime_and_trace()
+    assert (
+        orchestrator._stage_software_provenance(runtime, "08_noddi")
+        == BASE | MATLAB
+    )
+    assert discoveries == ["matlab"]
+
+
+def test_stage_software_provenance_rejects_unknown_stage_without_discovery(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    discoveries: list[str] = []
+    monkeypatch.setattr(
+        orchestrator,
+        "discover_fsl",
+        lambda config: discoveries.append("fsl") or object(),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "discover_matlab",
+        lambda config: discoveries.append("matlab") or object(),
+    )
+
+    with pytest.raises(ValueError, match="unknown stage: not_a_stage"):
+        orchestrator._stage_software_provenance(
+            orchestrator._Runtime(subject_config), "not_a_stage"
+        )
+
+    assert discoveries == []
+
+
 def test_software_provenance_rejects_symlinked_material_dependency(
     subject_config, tmp_path: Path
 ) -> None:
@@ -2432,8 +2521,23 @@ def _install_fake_pipeline(
     monkeypatch.setattr(
         orchestrator._Runtime, "require_matlab", lambda self: object()
     )
+    monkeypatch.setattr(orchestrator, "_base_software_provenance", lambda: BASE)
     monkeypatch.setattr(
-        orchestrator, "_software_provenance", lambda runtime: {"full": "1"}
+        orchestrator,
+        "_fsl_software_provenance",
+        lambda installation: FSL,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_matlab_software_provenance",
+        lambda installation: MATLAB,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_software_provenance",
+        lambda runtime: BASE | FSL | MATLAB,
     )
 
 
@@ -2458,6 +2562,55 @@ def test_fake_normal_run_honors_gate_and_completes_all_stages(
 
     assert outcome.status == expected_status
     assert calls == list(STAGE_ORDER[:expected_count])
+
+
+def test_fake_normal_run_records_stage_scoped_software_after_full_preflight(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", events)
+    fsl_installation = object()
+    matlab_installation = object()
+
+    def require_fsl(runtime: orchestrator._Runtime) -> object:
+        if runtime.fsl is None:
+            events.append("discover:fsl")
+            runtime.fsl = fsl_installation
+        return runtime.fsl
+
+    def require_matlab(runtime: orchestrator._Runtime) -> object:
+        if runtime.matlab is None:
+            events.append("discover:matlab")
+            runtime.matlab = matlab_installation
+        return runtime.matlab
+
+    monkeypatch.setattr(orchestrator._Runtime, "require_fsl", require_fsl)
+    monkeypatch.setattr(orchestrator._Runtime, "require_matlab", require_matlab)
+
+    outcome = run_pipeline(subject_config, "run")
+
+    assert outcome.status == "COMPLETE"
+    assert events[:5] == [
+        "00_input_audit",
+        "00_pre_denoise_motion_qc",
+        "discover:fsl",
+        "discover:matlab",
+        "01_denoise",
+    ]
+
+    def record_software(stage_name: str) -> dict[str, str]:
+        record = json.loads(
+            (
+                subject_config.subject_output
+                / stage_name
+                / ".stage_complete.json"
+            ).read_text(encoding="utf-8")
+        )
+        return record["software"]
+
+    assert record_software("00_input_audit") == BASE
+    assert record_software("05_eddy") == BASE | FSL
+    assert record_software("08_noddi") == BASE | MATLAB
 
 
 def test_fake_normal_run_exact_current_skip_stale_partial_and_force_contracts(

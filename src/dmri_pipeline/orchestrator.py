@@ -104,6 +104,11 @@ STAGE_ORDER = (
     "qc",
     "report",
 )
+
+_FSL_STAGES = frozenset(
+    {"01_denoise", "03_topup", "04_bet", "05_eddy", "09_jhu_48roi"}
+)
+_MATLAB_STAGES = frozenset({"08_noddi"})
 _CONTINUE_QC = {"INCLUDE", "INCLUDE_WITH_FLAGS", "INCLUDE_AFTER_REVIEW"}
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_ROOT = Path(__file__).resolve().parent
@@ -418,13 +423,7 @@ def run_pipeline(
     plan = _build_plan(config, runtime)
     _validate_plan_sources(plan)
     _create_subject_root(config.subject_output)
-    gate_context = StageContext(
-        config=config,
-        package_root=_PACKAGE_ROOT,
-        subject_root=config.subject_output,
-        software=_base_software_provenance(),
-    )
-    gate_runner = StageRunner(gate_context)
+    gate_runner = _stage_runner(config, runtime, STAGE_ORDER[0])
     outcomes: list[PipelineStageOutcome] = []
     with _SubjectLock(config.subject_output):
         if force_stage is not None:
@@ -435,8 +434,9 @@ def run_pipeline(
         gate_plan = plan[:2]
         _reject_unsafe_existing_state(gate_runner, gate_plan)
         for spec in gate_plan:
+            runner = _stage_runner(config, runtime, spec.name)
             print(f"[{spec.name}] checking")
-            result = gate_runner.run(spec)
+            result = runner.run(spec)
             outcome = _pipeline_stage_outcome(result)
             outcomes.append(outcome)
             print(f"[{spec.name}] {outcome.status}")
@@ -464,17 +464,14 @@ def run_pipeline(
         runtime.require_matlab()
         plan = _build_plan(config, runtime)
         _validate_plan_sources(plan)
-        runner = StageRunner(
-            StageContext(
-                config=config,
-                package_root=_PACKAGE_ROOT,
-                subject_root=config.subject_output,
-                software=_software_provenance(runtime),
-            )
-        )
         scientific_plan = plan[2:]
-        _reject_unsafe_existing_state(runner, scientific_plan)
-        for spec in scientific_plan:
+        stage_runs = tuple(
+            (spec, _stage_runner(config, runtime, spec.name))
+            for spec in scientific_plan
+        )
+        for spec, runner in stage_runs:
+            _reject_unsafe_existing_state(runner, (spec,))
+        for spec, runner in stage_runs:
             print(f"[{spec.name}] checking")
             result = runner.run(spec)
             outcome = _pipeline_stage_outcome(result)
@@ -488,6 +485,8 @@ def run_pipeline(
 def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
     root = config.subject_output
     paths = _paths(config)
+    qc_software = _stage_software_provenance(runtime, "qc")
+    report_software = _stage_software_provenance(runtime, "report")
     stripe_detail_paths = expected_stripe_detail_paths(
         config, root / "00_pre_denoise_motion_qc"
     )
@@ -713,7 +712,7 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
         )
 
     def qc_action(work: Path) -> None:
-        generate_all_qc(_qc_context(config, work, paths, runtime))
+        generate_all_qc(_qc_context(config, work, paths, qc_software))
 
     def report_action(work: Path) -> None:
         write_final_report(
@@ -721,7 +720,7 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
                 config,
                 work,
                 paths,
-                runtime,
+                report_software,
                 stripe_detail_paths=stripe_detail_paths,
             )
         )
@@ -1141,12 +1140,12 @@ def _qc_context(
     config: PipelineConfig,
     work: Path,
     paths: Mapping[str, Path],
-    runtime: _Runtime,
+    software: Mapping[str, str],
 ) -> StageQCContext:
     root = config.subject_output
     return StageQCContext(
         stage_context=StageContext(
-            config, _PACKAGE_ROOT, root, _software_provenance(runtime)
+            config, _PACKAGE_ROOT, root, software
         ),
         output_directory=work,
         bvals=config.bvals,
@@ -1186,7 +1185,7 @@ def _report_context(
     config: PipelineConfig,
     work: Path,
     paths: Mapping[str, Path],
-    runtime: _Runtime,
+    software: Mapping[str, str],
     *,
     stripe_detail_paths: Sequence[Path],
 ) -> ReportContext:
@@ -1194,7 +1193,7 @@ def _report_context(
     records = tuple(root / name / ".stage_complete.json" for name in REPORT_STAGE_ORDER)
     return ReportContext(
         stage_context=StageContext(
-            config, _PACKAGE_ROOT, root, _software_provenance(runtime)
+            config, _PACKAGE_ROOT, root, software
         ),
         output_directory=work,
         qc_manifest_json=paths["qc_manifest"],
@@ -2738,8 +2737,39 @@ def _discover_runtime(config: PipelineConfig) -> _Runtime:
 
 
 def _software_provenance(runtime: _Runtime) -> Mapping[str, str]:
-    fsl = runtime.require_fsl()
-    matlab = runtime.require_matlab()
+    evidence = dict(_base_software_provenance())
+    evidence.update(_fsl_software_provenance(runtime.require_fsl()))
+    evidence.update(_matlab_software_provenance(runtime.require_matlab()))
+    return MappingProxyType(dict(sorted(evidence.items())))
+
+
+def _stage_software_provenance(
+    runtime: _Runtime, stage_name: str
+) -> Mapping[str, str]:
+    if stage_name not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage_name}")
+    evidence = dict(_base_software_provenance())
+    if stage_name in _FSL_STAGES:
+        evidence.update(_fsl_software_provenance(runtime.require_fsl()))
+    if stage_name in _MATLAB_STAGES:
+        evidence.update(_matlab_software_provenance(runtime.require_matlab()))
+    return MappingProxyType(dict(sorted(evidence.items())))
+
+
+def _stage_runner(
+    config: PipelineConfig, runtime: _Runtime, stage_name: str
+) -> StageRunner:
+    return StageRunner(
+        StageContext(
+            config=config,
+            package_root=_PACKAGE_ROOT,
+            subject_root=config.subject_output,
+            software=_stage_software_provenance(runtime, stage_name),
+        )
+    )
+
+
+def _fsl_software_provenance(fsl: FSLInstallation) -> Mapping[str, str]:
     material_files = {
         "fsl_topup": fsl.topup,
         "fsl_applytopup": fsl.applytopup,
@@ -2755,15 +2785,9 @@ def _software_provenance(runtime: _Runtime) -> Mapping[str, str]:
         "fsl_b02b0_no_subsampling_config": fsl.b02b0_no_subsampling_config,
         "fsl_fa_to_standard_config": fsl.fa_to_standard_config,
         "fsl_standard_fa": fsl.standard_fa,
-        "matlab_executable": matlab.executable,
     }
     values = {
-        "python": sys.version.split()[0],
-        "numpy": np.__version__,
-        "nibabel": nib.__version__,
         "fsl_eddy": fsl.eddy.name,
-        "matlab": matlab.version,
-        "matlab_mexext": matlab.mexext,
     }
     for label, path in material_files.items():
         values[f"{label}_sha256"] = _software_sha256(path, label)
@@ -2777,6 +2801,20 @@ def _software_provenance(runtime: _Runtime) -> Mapping[str, str]:
             path, f"FSL runtime {logical.as_posix()}"
         )
     return MappingProxyType(dict(sorted(values.items())))
+
+
+def _matlab_software_provenance(
+    matlab: MATLABInstallation,
+) -> Mapping[str, str]:
+    return MappingProxyType(
+        {
+            "matlab": matlab.version,
+            "matlab_executable_sha256": _software_sha256(
+                matlab.executable, "matlab_executable"
+            ),
+            "matlab_mexext": matlab.mexext,
+        }
+    )
 
 
 def _software_sha256(path: Path, label: str) -> str:
