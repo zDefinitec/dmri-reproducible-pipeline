@@ -39,6 +39,36 @@ or more AP b0 volumes, the PA and AP phase-encoding vectors, and the
 scanner-derived `total_readout_time`. Acquisition values are user-supplied;
 the package does not infer them from DICOM or sidecars.
 
+## Optional split EDDY workflow (Rocky server only)
+
+The ordinary full command above remains the standard workflow. When EDDY must
+be scheduled separately, run all computation from a VS Code Remote terminal
+connected to Rocky (preferably inside `tmux`):
+
+```bash
+# Prepare the ordered upstream prefix.
+./run_pipeline.sh --stop-after 04_bet config/subject.yaml
+
+# Run the validated EDDY stage after its upstream stages are exact-current.
+./run_pipeline.sh --only-stage 05_eddy config/subject.yaml
+
+# Resume the normal pipeline, which continues at the first non-current stage
+# after EDDY.
+./run_pipeline.sh config/subject.yaml
+```
+
+For a cohort, use the sequential server-side wrapper; it runs no concurrent
+EDDY jobs by default:
+
+```bash
+./run_eddy_batch.sh config/subject-001.yaml config/subject-002.yaml
+```
+
+See the [ordered workflow contract](docs/PIPELINE.md),
+[recovery guidance](docs/TROUBLESHOOTING.md), and
+[Remote SSH instructions](docs/REMOTE_VSCODE.md). Do not run MRI computation
+on the Mac, through SSHFS, or from a Mac-local terminal.
+
 ## Optional preflight
 
 Optional preflight commands are:

@@ -78,14 +78,30 @@ machine-specific absolute interpreter path in workspace settings.
 
 There is no scheduler in this workflow. Start long pipeline work in `tmux` and
 run the pipeline directly, without a pipe that could hide the pipeline exit
-code:
+code. Run every command below in a VS Code Remote terminal connected to Rocky:
 
 ```bash
-tmux new -s dmri-SUBJECT_ID
+tmux new -s dmri-eddy
+cd /server/path/to/dmri_reproducible_pipeline
+export DMRI_SOFTWARE_CONFIG=/server/private/path/dmri-rocky9.sh
+./run_pipeline.sh --stop-after 04_bet config/subject.yaml
+./run_pipeline.sh --only-stage 05_eddy config/subject.yaml
+# Later, resume remaining stages normally if required.
 ./run_pipeline.sh config/subject.yaml
-# Detach with Ctrl-b, then d
-tmux attach -t dmri-SUBJECT_ID
+```
+
+For a cohort, run the sequential wrapper inside the same Rocky `tmux` session:
+
+```bash
+./run_eddy_batch.sh config/subject-001.yaml config/subject-002.yaml
+```
+
+Detach with `Ctrl-b d` and later reattach with:
+
+```bash
+tmux attach -t dmri-eddy
 ```
 
 A VS Code disconnection does not end a process running inside `tmux`. Reconnect
-to `SSH: dmri-rocky` and attach to the existing session to monitor it.
+to `SSH: dmri-rocky` and attach to the existing session to monitor it. The Mac,
+SSHFS, and a local terminal must not execute the MRI jobs.

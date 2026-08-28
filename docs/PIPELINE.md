@@ -39,6 +39,37 @@ outputs, and manifest are exact-current:
 ./run_pipeline.sh config/subject.yaml
 ```
 
+## Optional split EDDY execution
+
+The full command above is the ordinary workflow. A Rocky server operator can
+instead divide an otherwise unchanged scientific order into an upstream prefix,
+the EDDY stage, and normal downstream continuation:
+
+```bash
+./run_pipeline.sh --stop-after 04_bet config/subject.yaml
+./run_pipeline.sh --only-stage 05_eddy config/subject.yaml
+./run_pipeline.sh config/subject.yaml
+```
+
+`--stop-after 04_bet` runs the ordered prefix through `04_bet` and reports
+`PARTIAL_COMPLETE`. It does not change validation, QC, provenance, or atomic
+promotion. `--only-stage 05_eddy` requires every upstream stage to be
+exact-current and reports `STAGE_COMPLETE`; it likewise does not bypass QC,
+provenance, validation, or atomic promotion. If the selected EDDY stage is
+already exact-current, this single-stage command safely skips it and still
+reports `STAGE_COMPLETE`.
+
+To intentionally rerun EDDY, explicitly archive its result and every
+downstream result before running it alone:
+
+```bash
+./run_pipeline.sh --force-stage 05_eddy --only-stage 05_eddy config/subject.yaml
+```
+
+After EDDY is exact-current, the normal command resumes with the first
+non-current downstream stage. Do not use bounded execution to evade a QC,
+provenance, validation, or promotion failure.
+
 Run only one pipeline invocation per subject at a time, and do not run
 `--force-stage` or invalidate that subject concurrently. This is part of the
 NFS reservation safety model. An interruption during NFS promotion can leave
