@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -23,6 +24,12 @@ import numpy as np
 
 from .audit import InputAudit, audit_inputs, write_input_audit
 from .config import PipelineConfig
+from .eddy_timing import (
+    EddyTiming,
+    EddyTimingError,
+    read_eddy_timing,
+    write_eddy_timing,
+)
 from .fsl import (
     ExternalCommandError,
     FSLContext,
@@ -633,16 +640,23 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
             raise PipelineOutputError(str(error)) from error
 
     def eddy_action(work: Path) -> None:
+        stage_started = time.monotonic()
         installation = runtime.require_fsl()
         audit_value = audit_inputs(config)
         fsl_context = _fsl_context(
             config, installation, audit_value, eddy_dir=work
         )
         log = work / "eddy_fsl.log"
-        run_fsl_command(build_eddy_command(fsl_context), log, installation.environment)
+        eddy_started = time.monotonic()
+        run_fsl_command(
+            build_eddy_command(fsl_context), log, installation.environment
+        )
+        eddy_finished = time.monotonic()
+        quad_started = time.monotonic()
         run_fsl_command(
             build_eddy_quad_command(fsl_context), log, installation.environment
         )
+        quad_finished = time.monotonic()
         bvals = _load_text(config.bvals, "b-values").reshape(-1)
         outliers = _load_eddy_outlier_map(
             Path(f"{fsl_context.eddy_prefix}.eddy_outlier_map"),
@@ -663,6 +677,15 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
                 "data_file_bvals": config.bvals,
                 "qc_path": fsl_context.eddy_quad_output,
             },
+        )
+        stage_finished = time.monotonic()
+        write_eddy_timing(
+            work / "eddy_timing.json",
+            EddyTiming(
+                eddy_command_seconds=eddy_finished - eddy_started,
+                eddy_quad_seconds=quad_finished - quad_started,
+                stage_action_seconds=stage_finished - stage_started,
+            ),
         )
 
     def dti_action(work: Path) -> None:
@@ -864,7 +887,7 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
                 paths["topup_fieldcoef"],
                 paths["topup_movpar"],
             ),
-            (*common, module("fsl")),
+            (*common, module("fsl"), module("eddy_timing")),
         ),
         StageSpec(
             STAGE_ORDER[7],
@@ -1014,6 +1037,7 @@ def _paths(config: PipelineConfig) -> dict[str, Path]:
         "eddy_residuals": Path(f"{eddy_prefix}.eddy_residuals.nii.gz"),
         "eddy_cnr": Path(f"{eddy_prefix}.eddy_cnr_maps.nii.gz"),
         "eddy_quad_json": root / "05_eddy" / "eddy_quad.json",
+        "eddy_timing": root / "05_eddy" / "eddy_timing.json",
         "dti_fa": root / "06_dti" / "FA.nii.gz",
         "dti_metrics": root / "06_dti" / "dti_metrics.json",
         "dki_metrics": root / "07_dki" / "dki_metrics.json",
@@ -1675,9 +1699,14 @@ def _validate_eddy_outputs(
         Path(f"{prefix}.eddy_residuals.nii.gz"),
         Path(f"{prefix}.eddy_cnr_maps.nii.gz"),
         work / "eddy_quad.json",
+        work / "eddy_timing.json",
         work / "eddy_fsl.log",
     )
     _require_regular_files(required)
+    try:
+        read_eddy_timing(work / "eddy_timing.json")
+    except EddyTimingError as error:
+        raise StageStateError(f"invalid EDDY timing evidence: {error}") from error
     if audit is None or bvals_path is None:
         raise StageStateError("EDDY validation requires the fresh input audit and b-values")
     expected_shape = tuple(audit.pa_shape)

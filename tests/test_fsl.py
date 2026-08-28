@@ -1053,6 +1053,8 @@ def test_eddy_has_exact_acquisition_gradient_mask_and_thread_wiring(
         f"--bvecs={fsl_context.bvecs}",
         f"--bvals={fsl_context.bvals}",
         f"--topup={fsl_context.topup_prefix}",
+        "--fwhm=0",
+        "--flm=quadratic",
         "--repol",
         "--cnr_maps",
         "--residuals",

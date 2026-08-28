@@ -122,6 +122,10 @@ def test_build_plan_wires_canonical_and_rotated_gradients(subject_config) -> Non
     root = subject_config.subject_output
 
     assert root / "00_input_audit" / "bvecs_fsl_3xN" in plan["05_eddy"].input_paths
+    assert (
+        Path(orchestrator.__file__).with_name("eddy_timing.py")
+        in plan["05_eddy"].source_paths
+    )
     rotated = root / "05_eddy" / "eddy_unwarped_images.eddy_rotated_bvecs"
     for name in ("06_dti", "07_dki", "07_dki_direct", "08_noddi"):
         assert rotated in plan[name].input_paths
@@ -662,6 +666,19 @@ def _populate_valid_eddy(work: Path, subject_config) -> None:
         ),
         encoding="utf-8",
     )
+    (work / "eddy_timing.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "eddy_command_seconds": 7200.0,
+                "eddy_quad_seconds": 240.0,
+                "stage_action_seconds": 7440.5,
+                "eddy_command_includes_cnr_maps": True,
+                "eddy_command_includes_residuals": True,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_successful_noddi_outputs_validate_and_promote_with_real_log_name(
@@ -896,6 +913,148 @@ def test_eddy_validator_accepts_complete_finite_outputs_and_quad_source(
 
     assert work / "eddy_quad" / "qc.json" in outputs
     assert work / "eddy_quad.json" in outputs
+    assert work / "eddy_timing.json" in outputs
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+            "unexpected": 1,
+        },
+        {
+            "schema_version": True,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": True,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": float("nan"),
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": float("inf"),
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": -1.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": False,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": False,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7439.0,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+    ),
+    ids=(
+        "missing-key",
+        "extra-key",
+        "boolean-version",
+        "boolean-duration",
+        "nan-duration",
+        "infinite-duration",
+        "negative-duration",
+        "false-cnr-flag",
+        "false-residuals-flag",
+        "impossible-total",
+    ),
+)
+def test_eddy_validator_rejects_ambiguous_timing_evidence(
+    subject_config, tmp_path: Path, payload: dict[str, object]
+) -> None:
+    work = tmp_path / "eddy"
+    work.mkdir()
+    _populate_valid_eddy(work, subject_config)
+    (work / "eddy_timing.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    with pytest.raises(StageStateError, match="timing"):
+        _validate_eddy_outputs(
+            work, audit_inputs(subject_config), subject_config.bvals
+        )
+
+
+def test_eddy_validator_requires_timing_evidence(
+    subject_config, tmp_path: Path
+) -> None:
+    work = tmp_path / "eddy"
+    work.mkdir()
+    _populate_valid_eddy(work, subject_config)
+    (work / "eddy_timing.json").unlink()
+
+    with pytest.raises(StageStateError, match="eddy_timing"):
+        _validate_eddy_outputs(
+            work, audit_inputs(subject_config), subject_config.bvals
+        )
+
+
+def test_eddy_validator_rejects_malformed_timing_json(
+    subject_config, tmp_path: Path
+) -> None:
+    work = tmp_path / "eddy"
+    work.mkdir()
+    _populate_valid_eddy(work, subject_config)
+    (work / "eddy_timing.json").write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(StageStateError, match="timing"):
+        _validate_eddy_outputs(
+            work, audit_inputs(subject_config), subject_config.bvals
+        )
 
 
 def test_eddy_quad_source_tree_is_validated_before_json_is_derived(
@@ -1424,6 +1583,58 @@ def _fake_runtime(tmp_path: Path, subject_config) -> tuple[orchestrator._Runtime
         ),
     )
     return runtime, [*tools.values(), *resources, matlab]
+
+
+def test_eddy_action_records_complete_monotonic_command_and_stage_durations(
+    subject_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _ = _fake_runtime(tmp_path, subject_config)
+    eddy = {
+        stage.name: stage
+        for stage in orchestrator._build_plan(subject_config, runtime)
+    }["05_eddy"]
+    work = tmp_path / "eddy-work"
+    work.mkdir()
+    ticks = iter((10.0, 10.0, 130.0, 130.0, 145.0, 146.0))
+    clock = type(
+        "SyntheticClock", (), {"monotonic": staticmethod(lambda: next(ticks))}
+    )
+    monkeypatch.setattr(orchestrator, "time", clock, raising=False)
+
+    def fake_fsl_command(argv, log_path: Path, environment):
+        executable = Path(argv[0]).name
+        assert dict(environment) == runtime.fsl.environment
+        if executable == "eddy":
+            _populate_valid_eddy_core(work, subject_config)
+        elif executable == "eddy_quad":
+            _populate_valid_quad(work / "eddy_quad", work, subject_config)
+        else:
+            pytest.fail(f"unexpected FSL command: {executable}")
+        return type(
+            "SyntheticCommandResult",
+            (),
+            {"returncode": 0, "stderr": "", "stdout": ""},
+        )()
+
+    monkeypatch.setattr(orchestrator, "run_fsl_command", fake_fsl_command)
+
+    eddy.action(work)
+
+    timing_path = work / "eddy_timing.json"
+    assert timing_path.is_file()
+    payload = json.loads(
+        timing_path.read_text(encoding="utf-8")
+    )
+    assert payload == {
+        "schema_version": 1,
+        "eddy_command_seconds": 120.0,
+        "eddy_quad_seconds": 15.0,
+        "stage_action_seconds": 136.0,
+        "eddy_command_includes_cnr_maps": True,
+        "eddy_command_includes_residuals": True,
+    }
 
 
 def test_software_provenance_tracks_every_material_fsl_and_matlab_file(
