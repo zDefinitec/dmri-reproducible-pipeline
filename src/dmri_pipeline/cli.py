@@ -18,6 +18,7 @@ from .orchestrator import (
     PipelineExternalError,
     PipelineInputError,
     PipelineOutputError,
+    StageSelection,
     run_pipeline,
 )
 from .preprocess import PreprocessError
@@ -46,6 +47,9 @@ def _parser() -> argparse.ArgumentParser:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--validate-only", action="store_true")
     modes.add_argument("--dry-run", action="store_true")
+    bounds = parser.add_mutually_exclusive_group()
+    bounds.add_argument("--stop-after", choices=STAGE_ORDER)
+    bounds.add_argument("--only-stage", choices=STAGE_ORDER)
     parser.add_argument("--force-stage", choices=STAGE_ORDER)
     parser.add_argument("config", nargs=1, metavar="CONFIG.yaml")
     return parser
@@ -67,14 +71,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             if namespace.dry_run
             else "run"
         )
+        selection = StageSelection(
+            stop_after=namespace.stop_after,
+            only_stage=namespace.only_stage,
+        )
+        if mode != "run" and selection != StageSelection():
+            raise _CLIError("bounded execution is valid only for a normal run")
+        if (
+            namespace.force_stage is not None
+            and namespace.force_stage not in selection.execution_names
+        ):
+            raise _CLIError(
+                f"forced stage {namespace.force_stage} is outside the selected "
+                "execution range"
+            )
         config = load_config(Path(namespace.config[0]))
-        outcome = run_pipeline(config, mode, namespace.force_stage)
+        outcome = run_pipeline(
+            config,
+            mode,
+            namespace.force_stage,
+            selection=selection,
+        )
         print(
             f"RESULT subject={outcome.subject} status={outcome.status} "
             f"output={outcome.subject_output}"
         )
         return {
             "COMPLETE": 0,
+            "PARTIAL_COMPLETE": 0,
+            "STAGE_COMPLETE": 0,
             "VALIDATED": 0,
             "DRY_RUN": 0,
             "EXCLUDED": 20,

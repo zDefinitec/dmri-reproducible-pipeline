@@ -124,6 +124,7 @@ from .orchestrator import (
     PipelineOutcome,
     PipelineOutputError,
     PipelineStageOutcome,
+    StageSelection,
     build_plan,
     run_pipeline,
 )
@@ -236,6 +237,7 @@ __all__ = [
     "write_final_report",
     "STAGE_ORDER",
     "PipelineOutcome",
+    "StageSelection",
     "PipelineDependencyError",
     "PipelineExternalError",
     "PipelineInputError",

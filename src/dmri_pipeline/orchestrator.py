@@ -197,6 +197,61 @@ class PipelineOutcome:
         return tuple((stage.stage, stage.status) for stage in self.stages)
 
 
+@dataclass(frozen=True)
+class StageSelection:
+    """One optional bounded execution request over the fixed stage order."""
+
+    stop_after: str | None = None
+    only_stage: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.stop_after is not None and self.only_stage is not None:
+            raise ValueError("stop_after and only_stage are mutually exclusive")
+        for label, value in (
+            ("stop_after", self.stop_after),
+            ("only_stage", self.only_stage),
+        ):
+            if value is not None and value not in STAGE_ORDER:
+                raise ValueError(f"unknown {label} stage: {value}")
+
+    @property
+    def execution_names(self) -> tuple[str, ...]:
+        if self.only_stage is not None:
+            return (self.only_stage,)
+        if self.stop_after is not None:
+            return STAGE_ORDER[: STAGE_ORDER.index(self.stop_after) + 1]
+        return STAGE_ORDER
+
+    @property
+    def required_names(self) -> tuple[str, ...]:
+        if self.only_stage is not None:
+            return STAGE_ORDER[: STAGE_ORDER.index(self.only_stage) + 1]
+        return self.execution_names
+
+    @property
+    def success_status(self) -> str:
+        if self.only_stage is not None:
+            return "STAGE_COMPLETE"
+        if self.stop_after is not None:
+            return "PARTIAL_COMPLETE"
+        return "COMPLETE"
+
+
+def _validate_selection(
+    mode: str,
+    force_stage: str | None,
+    selection: StageSelection,
+) -> None:
+    if not isinstance(selection, StageSelection):
+        raise TypeError("selection must be a StageSelection")
+    if mode != "run" and selection != StageSelection():
+        raise ValueError("bounded execution is valid only for a normal run")
+    if force_stage is not None and force_stage not in selection.execution_names:
+        raise ValueError(
+            f"forced stage {force_stage} is outside the selected execution range"
+        )
+
+
 @dataclass
 class _Runtime:
     config: PipelineConfig
@@ -325,6 +380,8 @@ def run_pipeline(
     config: PipelineConfig,
     mode: str,
     force_stage: str | None = None,
+    *,
+    selection: StageSelection | None = None,
 ) -> PipelineOutcome:
     """Validate, describe, or execute one subject pipeline."""
     _require_config(config)
@@ -334,6 +391,8 @@ def run_pipeline(
         raise ValueError(f"unknown force stage: {force_stage}")
     if mode != "run" and force_stage is not None:
         raise ValueError("--force-stage is valid only for a normal run")
+    selection = StageSelection() if selection is None else selection
+    _validate_selection(mode, force_stage, selection)
 
     _validate_subject_input_separation(config)
     audit = audit_inputs(config)
