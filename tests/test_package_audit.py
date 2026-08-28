@@ -607,6 +607,26 @@ def test_required_documentation_covers_the_public_contract() -> None:
         assert command in public_text, command
 
 
+def test_split_eddy_documentation_requires_rocky_remote_tmux_context() -> None:
+    documents = {
+        relative: (PACKAGE_ROOT / relative).read_text(encoding="utf-8")
+        for relative in (
+            "README.md",
+            "docs/PIPELINE.md",
+            "docs/TROUBLESHOOTING.md",
+        )
+    }
+    required_context = (
+        "inside a tmux session in a VS Code Remote terminal connected to Rocky"
+    )
+    for relative, text in documents.items():
+        assert required_context in " ".join(text.split()), relative
+    assert "preferably inside `tmux`" not in documents["README.md"]
+    assert "`--force-stage NAME` is valid only for a normal run." not in documents[
+        "docs/PIPELINE.md"
+    ]
+
+
 def test_vscode_recommendations_are_valid_and_non_secret() -> None:
     payload = json.loads(
         (PACKAGE_ROOT / ".vscode" / "extensions.json").read_text(encoding="utf-8")

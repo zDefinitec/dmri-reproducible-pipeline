@@ -43,6 +43,9 @@ restarting that stage.
 
 ## Split EDDY recovery and batch behaviour
 
+Every command in this recovery and batch workflow must run inside a tmux
+session in a VS Code Remote terminal connected to Rocky.
+
 After a successful upstream prefix, an exact-current `05_eddy` can be checked
 or safely skipped without rerunning it:
 
@@ -62,8 +65,8 @@ the failure and preserve the evidence, then follow the existing inspected
 recovery procedure: resolve the cause and use the explicit force command from
 the required safe boundary. Do not delete or edit stage evidence by hand.
 
-For cohorts, run the wrapper on Rocky after each subject's upstream stages are
-exact-current:
+For cohorts, run the wrapper in that same Rocky `tmux` session after each
+subject's upstream stages are exact-current:
 
 ```bash
 ./run_eddy_batch.sh config/subject-001.yaml config/subject-002.yaml

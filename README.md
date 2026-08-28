@@ -42,8 +42,8 @@ the package does not infer them from DICOM or sidecars.
 ## Optional split EDDY workflow (Rocky server only)
 
 The ordinary full command above remains the standard workflow. When EDDY must
-be scheduled separately, run all computation from a VS Code Remote terminal
-connected to Rocky (preferably inside `tmux`):
+be scheduled separately, every command below must run inside a tmux session
+in a VS Code Remote terminal connected to Rocky:
 
 ```bash
 # Prepare the ordered upstream prefix.
@@ -57,8 +57,8 @@ connected to Rocky (preferably inside `tmux`):
 ./run_pipeline.sh config/subject.yaml
 ```
 
-For a cohort, use the sequential server-side wrapper; it runs no concurrent
-EDDY jobs by default:
+For a cohort, use the sequential wrapper in that same Rocky `tmux` session; it
+runs no concurrent EDDY jobs by default:
 
 ```bash
 ./run_eddy_batch.sh config/subject-001.yaml config/subject-002.yaml

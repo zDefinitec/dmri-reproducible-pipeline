@@ -43,7 +43,8 @@ outputs, and manifest are exact-current:
 
 The full command above is the ordinary workflow. A Rocky server operator can
 instead divide an otherwise unchanged scientific order into an upstream prefix,
-the EDDY stage, and normal downstream continuation:
+the EDDY stage, and normal downstream continuation. Every command below must
+run inside a tmux session in a VS Code Remote terminal connected to Rocky:
 
 ```bash
 ./run_pipeline.sh --stop-after 04_bet config/subject.yaml
@@ -77,7 +78,8 @@ an empty noncurrent final directory plus the intact work directory; explicit
 forcing archives both before rerunning that stage.
 
 `--dry-run` validates and prints stage status and exact external argv without
-writing stages. `--force-stage NAME` is valid only for a normal run. It
-archives `NAME` and every downstream stage; it does not bypass input or
-output validation and must never be used to conceal a QC or provenance
-failure.
+writing stages. `--force-stage NAME` archives `NAME` and every downstream
+stage. It is permitted with a selected run when the forced stage is inside the
+selected execution range, including `--force-stage 05_eddy --only-stage
+05_eddy`. It does not bypass input or output validation and must never be used
+to conceal a QC or provenance failure.
