@@ -401,8 +401,8 @@ def run_pipeline(
 
     _validate_subject_input_separation(config)
     audit = audit_inputs(config)
-    validate_jhu_resource(_ATLAS_IMAGE, _ATLAS_XML)
     if mode != "run":
+        validate_jhu_resource(_ATLAS_IMAGE, _ATLAS_XML)
         runtime = _discover_runtime(config)
         plan = _build_plan(config, runtime)
         _validate_plan_sources(plan)
@@ -421,20 +421,45 @@ def run_pipeline(
 
     runtime = _Runtime(config)
     plan = _build_plan(config, runtime)
-    _validate_plan_sources(plan)
+    required_names = selection.required_names
+    required_plan = [spec for spec in plan if spec.name in required_names]
+    _validate_plan_sources(required_plan)
+    if "09_jhu_48roi" in required_names:
+        validate_jhu_resource(_ATLAS_IMAGE, _ATLAS_XML)
     _create_subject_root(config.subject_output)
-    gate_runner = _stage_runner(config, runtime, STAGE_ORDER[0])
     outcomes: list[PipelineStageOutcome] = []
     with _SubjectLock(config.subject_output):
+        if selection.only_stage is not None:
+            upstream_outcome = _require_current_upstream(
+                config,
+                runtime,
+                plan,
+                selection.only_stage,
+            )
+            if upstream_outcome is not None:
+                return upstream_outcome
+
+        gate_runner = _stage_runner(config, runtime, STAGE_ORDER[0])
         if force_stage is not None:
             gate_runner.invalidate_from(STAGE_ORDER, force_stage)
-        elif _safe_manual_review_transition(config, gate_runner, audit):
+        elif (
+            selection.only_stage is None
+            and "00_pre_denoise_motion_qc" in selection.execution_names
+            and _safe_manual_review_transition(config, gate_runner, audit)
+        ):
             gate_runner.invalidate_from(STAGE_ORDER, STAGE_ORDER[0])
 
-        gate_plan = plan[:2]
-        _reject_unsafe_existing_state(gate_runner, gate_plan)
-        for spec in gate_plan:
-            runner = _stage_runner(config, runtime, spec.name)
+        execution_names = selection.execution_names
+        gate_plan = [
+            spec for spec in plan[:2] if spec.name in execution_names
+        ]
+        gate_runs = tuple(
+            (spec, _stage_runner(config, runtime, spec.name))
+            for spec in gate_plan
+        )
+        for spec, runner in gate_runs:
+            _reject_unsafe_existing_state(runner, (spec,))
+        for spec, runner in gate_runs:
             print(f"[{spec.name}] checking")
             result = runner.run(spec)
             outcome = _pipeline_stage_outcome(result)
@@ -442,29 +467,21 @@ def run_pipeline(
             print(f"[{spec.name}] {outcome.status}")
             if spec.name == "00_pre_denoise_motion_qc":
                 decision = _read_qc_decision(result.directory)
-                if decision.status == "EXCLUDE":
-                    return PipelineOutcome(
-                        config.subject_id,
-                        "EXCLUDED",
-                        tuple(outcomes),
-                        config.subject_output,
-                    )
-                if decision.status == "HOLD_FOR_REVIEW":
-                    return PipelineOutcome(
-                        config.subject_id,
-                        "HOLD_FOR_REVIEW",
-                        tuple(outcomes),
-                        config.subject_output,
-                    )
-                if decision.status not in _CONTINUE_QC:
-                    raise StageStateError(
-                        f"unsupported stripe-QC decision: {decision.status}"
-                    )
-        runtime.require_fsl()
-        runtime.require_matlab()
-        plan = _build_plan(config, runtime)
-        _validate_plan_sources(plan)
-        scientific_plan = plan[2:]
+                terminal = _qc_pipeline_outcome(
+                    config, decision, tuple(outcomes)
+                )
+                if terminal is not None:
+                    return terminal
+
+        if selection == StageSelection():
+            runtime.require_fsl()
+            runtime.require_matlab()
+            plan = _build_plan(config, runtime)
+            _validate_plan_sources(plan)
+
+        scientific_plan = [
+            spec for spec in plan[2:] if spec.name in execution_names
+        ]
         stage_runs = tuple(
             (spec, _stage_runner(config, runtime, spec.name))
             for spec in scientific_plan
@@ -478,7 +495,10 @@ def run_pipeline(
             outcomes.append(outcome)
             print(f"[{spec.name}] {outcome.status}")
     return PipelineOutcome(
-        config.subject_id, "COMPLETE", tuple(outcomes), config.subject_output
+        config.subject_id,
+        selection.success_status,
+        tuple(outcomes),
+        config.subject_output,
     )
 
 
@@ -2984,6 +3004,27 @@ def _reject_unsafe_existing_state(
                 )
 
 
+def _require_current_upstream(
+    config: PipelineConfig,
+    runtime: _Runtime,
+    plan: Sequence[StageSpec],
+    selected_stage: str,
+) -> PipelineOutcome | None:
+    for spec in plan[: STAGE_ORDER.index(selected_stage)]:
+        runner = _stage_runner(config, runtime, spec.name)
+        _reject_unsafe_existing_state(runner, (spec,))
+        if not runner.is_current(spec):
+            raise StageStateError(
+                f"upstream stage is not exact-current: {spec.name}"
+            )
+        if spec.name == "00_pre_denoise_motion_qc":
+            decision = _read_qc_decision(runner.final_dir(spec.name))
+            terminal = _qc_pipeline_outcome(config, decision, ())
+            if terminal is not None:
+                return terminal
+    return None
+
+
 def _read_qc_decision(directory: Path) -> QCDecision:
     payload = _read_json(directory / "stripe_decision.json", "stripe decision")
     try:
@@ -3001,9 +3042,38 @@ def _read_qc_decision(directory: Path) -> QCDecision:
         raise StageStateError("stripe decision record is malformed") from error
 
 
+def _qc_pipeline_outcome(
+    config: PipelineConfig,
+    decision: QCDecision,
+    stages: tuple[PipelineStageOutcome, ...],
+) -> PipelineOutcome | None:
+    if decision.status == "EXCLUDE":
+        return PipelineOutcome(
+            config.subject_id,
+            "EXCLUDED",
+            stages,
+            config.subject_output,
+        )
+    if decision.status == "HOLD_FOR_REVIEW":
+        return PipelineOutcome(
+            config.subject_id,
+            "HOLD_FOR_REVIEW",
+            stages,
+            config.subject_output,
+        )
+    if decision.status not in _CONTINUE_QC:
+        raise StageStateError(
+            f"unsupported stripe-QC decision: {decision.status}"
+        )
+    return None
+
+
 def _pipeline_stage_outcome(outcome: StageOutcome) -> PipelineStageOutcome:
     return PipelineStageOutcome(
-        outcome.stage, outcome.status, outcome.directory, outcome.record_path
+        outcome.stage,
+        outcome.status.upper(),
+        outcome.directory,
+        outcome.record_path,
     )
 
 

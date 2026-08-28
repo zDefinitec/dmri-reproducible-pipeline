@@ -15,6 +15,7 @@ import dmri_pipeline.stripe_qc as stripe_qc
 from dmri_pipeline.orchestrator import (
     STAGE_ORDER,
     PipelineOutcome,
+    StageSelection,
     _SubjectLock,
     _dry_run,
     _dry_run_commands,
@@ -283,8 +284,8 @@ def test_exclusion_stops_before_external_dependency_discovery(
 
     assert outcome.status == "EXCLUDED"
     assert outcome.stage_statuses == (
-        ("00_input_audit", "completed"),
-        ("00_pre_denoise_motion_qc", "completed"),
+        ("00_input_audit", "COMPLETED"),
+        ("00_pre_denoise_motion_qc", "COMPLETED"),
     )
 
 
@@ -2297,7 +2298,7 @@ def test_real_public_plan_include_with_flags_completes_then_skips_current_rerun(
         / "vols_no_outliers.txt"
     ).exists()
     assert first.stage_statuses == tuple(
-        (name, "completed") for name in STAGE_ORDER
+        (name, "COMPLETED") for name in STAGE_ORDER
     )
     assert len(first.stages) == 15
     assert all(
@@ -2310,7 +2311,7 @@ def test_real_public_plan_include_with_flags_completes_then_skips_current_rerun(
     )
     assert second.status == "COMPLETE"
     assert second.stage_statuses == tuple(
-        (name, "skipped") for name in STAGE_ORDER
+        (name, "SKIPPED") for name in STAGE_ORDER
     )
     assert tuple(action_calls) == calls_after_first
     assert discoveries == ["fsl", "matlab", "fsl", "matlab"]
@@ -2509,18 +2510,31 @@ def _install_fake_pipeline(
     subject_config,
     decision: str,
     calls: list[str],
+    discoveries: list[str] | None = None,
 ) -> None:
     monkeypatch.setattr(
         orchestrator,
         "_build_plan",
         lambda config, runtime: _simple_plan(config, decision, calls),
     )
-    monkeypatch.setattr(
-        orchestrator._Runtime, "require_fsl", lambda self: object()
-    )
-    monkeypatch.setattr(
-        orchestrator._Runtime, "require_matlab", lambda self: object()
-    )
+    if discoveries is None:
+        monkeypatch.setattr(
+            orchestrator._Runtime, "require_fsl", lambda self: object()
+        )
+        monkeypatch.setattr(
+            orchestrator._Runtime, "require_matlab", lambda self: object()
+        )
+    else:
+        def discover_fsl(_config):
+            discoveries.append("fsl")
+            return object()
+
+        def discover_matlab(_config):
+            discoveries.append("matlab")
+            return object()
+
+        monkeypatch.setattr(orchestrator, "discover_fsl", discover_fsl)
+        monkeypatch.setattr(orchestrator, "discover_matlab", discover_matlab)
     monkeypatch.setattr(orchestrator, "_base_software_provenance", lambda: BASE)
     monkeypatch.setattr(
         orchestrator,
@@ -2539,6 +2553,345 @@ def _install_fake_pipeline(
         "_software_provenance",
         lambda runtime: BASE | FSL | MATLAB,
     )
+
+
+def _seed_fake_stages(
+    subject_config,
+    decision: str,
+    calls: list[str],
+    through: str,
+) -> None:
+    subject_config.subject_output.mkdir(parents=True, exist_ok=True)
+    runtime = orchestrator._Runtime(subject_config)
+    plan = _simple_plan(subject_config, decision, calls)
+    stop = STAGE_ORDER.index(through) + 1
+    for spec in plan[:stop]:
+        orchestrator._stage_runner(
+            subject_config, runtime, spec.name
+        ).run(spec)
+
+
+def test_stop_after_bet_executes_exact_prefix(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="04_bet"),
+    )
+
+    assert outcome.status == "PARTIAL_COMPLETE"
+    assert tuple(stage.stage for stage in outcome.stages) == STAGE_ORDER[:6]
+    assert calls == list(STAGE_ORDER[:6])
+    assert not (subject_config.subject_output / "05_eddy").exists()
+
+
+def test_stop_after_input_audit_does_not_read_qc_decision(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    monkeypatch.setattr(
+        orchestrator,
+        "_read_qc_decision",
+        lambda directory: pytest.fail(
+            f"QC decision was read outside the selected range: {directory}"
+        ),
+    )
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="00_input_audit"),
+    )
+
+    assert outcome.status == "PARTIAL_COMPLETE"
+    assert tuple(stage.stage for stage in outcome.stages) == (
+        "00_input_audit",
+    )
+    assert calls == ["00_input_audit"]
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_status", "expected_exit_code"),
+    [
+        ("EXCLUDE", "EXCLUDED", 20),
+        ("HOLD_FOR_REVIEW", "HOLD_FOR_REVIEW", 21),
+    ],
+)
+def test_stop_after_qc_preserves_terminal_gate_outcome(
+    subject_config,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: str,
+    expected_status: str,
+    expected_exit_code: int,
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, decision, calls)
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(
+            stop_after="00_pre_denoise_motion_qc"
+        ),
+    )
+    recorded = orchestrator._read_qc_decision(
+        subject_config.subject_output / "00_pre_denoise_motion_qc"
+    )
+
+    assert outcome.status == expected_status
+    assert tuple(stage.stage for stage in outcome.stages) == STAGE_ORDER[:2]
+    assert recorded.exit_code == expected_exit_code
+    assert calls == list(STAGE_ORDER[:2])
+
+
+def test_only_stage_eddy_refuses_first_missing_upstream_before_action(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+
+    with pytest.raises(
+        StageStateError, match="upstream.*00_input_audit"
+    ):
+        run_pipeline(
+            subject_config,
+            "run",
+            selection=StageSelection(only_stage="05_eddy"),
+        )
+
+    assert "05_eddy" not in calls
+
+
+def test_only_stage_eddy_refuses_first_stale_upstream_before_action(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    _seed_fake_stages(subject_config, "INCLUDE", calls, "04_bet")
+    calls.clear()
+    (subject_config.subject_output / "02_gibbs" / "payload.txt").write_text(
+        "stale\n", encoding="utf-8"
+    )
+
+    with pytest.raises(StageStateError, match="02_gibbs"):
+        run_pipeline(
+            subject_config,
+            "run",
+            selection=StageSelection(only_stage="05_eddy"),
+        )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_status"),
+    [
+        ("EXCLUDE", "EXCLUDED"),
+        ("HOLD_FOR_REVIEW", "HOLD_FOR_REVIEW"),
+    ],
+)
+def test_only_stage_eddy_preserves_current_terminal_upstream_qc_outcome(
+    subject_config,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: str,
+    expected_status: str,
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, decision, calls)
+    _seed_fake_stages(
+        subject_config,
+        decision,
+        calls,
+        "00_pre_denoise_motion_qc",
+    )
+    calls.clear()
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(only_stage="05_eddy"),
+    )
+
+    assert outcome.status == expected_status
+    assert outcome.stages == ()
+    assert calls == []
+
+
+def test_only_stage_eddy_reports_exact_current_stage_as_skipped(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    _seed_fake_stages(subject_config, "INCLUDE", calls, "05_eddy")
+    calls.clear()
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(only_stage="05_eddy"),
+    )
+
+    assert outcome.status == "STAGE_COMPLETE"
+    assert outcome.stage_statuses == (("05_eddy", "SKIPPED"),)
+    assert calls == []
+
+
+def test_force_bounded_eddy_rerun_archives_target_and_downstream(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    _seed_fake_stages(subject_config, "INCLUDE", calls, "07_dki")
+    calls.clear()
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        force_stage="05_eddy",
+        selection=StageSelection(only_stage="05_eddy"),
+    )
+
+    archives = list(
+        (subject_config.subject_output / ".invalidated").iterdir()
+    )
+    assert outcome.status == "STAGE_COMPLETE"
+    assert outcome.stage_statuses == (("05_eddy", "COMPLETED"),)
+    assert calls == ["05_eddy"]
+    assert len(archives) == 1
+    for stage in ("05_eddy", "06_dti", "07_dki"):
+        assert (archives[0] / "final" / stage / "payload.txt").is_file()
+    assert not (subject_config.subject_output / "06_dti").exists()
+    assert not (subject_config.subject_output / "07_dki").exists()
+
+
+@pytest.mark.parametrize(
+    ("selection", "seed_through", "expected_discoveries"),
+    [
+        (StageSelection(stop_after="00_input_audit"), None, []),
+        (StageSelection(stop_after="04_bet"), None, ["fsl"]),
+        (StageSelection(only_stage="05_eddy"), "04_bet", ["fsl"]),
+        (
+            StageSelection(only_stage="08_noddi"),
+            "07_dki_direct",
+            ["fsl", "matlab"],
+        ),
+        (StageSelection(), None, ["fsl", "matlab"]),
+    ],
+)
+def test_only_stage_and_stop_after_discovery_contract(
+    subject_config,
+    monkeypatch: pytest.MonkeyPatch,
+    selection: StageSelection,
+    seed_through: str | None,
+    expected_discoveries: list[str],
+) -> None:
+    calls: list[str] = []
+    discoveries: list[str] = []
+    _install_fake_pipeline(
+        monkeypatch,
+        subject_config,
+        "INCLUDE",
+        calls,
+        discoveries,
+    )
+    if seed_through is not None:
+        _seed_fake_stages(
+            subject_config, "INCLUDE", calls, seed_through
+        )
+    calls.clear()
+    discoveries.clear()
+    if selection.only_stage == "05_eddy":
+        monkeypatch.setattr(
+            orchestrator,
+            "discover_matlab",
+            lambda config: pytest.fail(
+                "MATLAB discovery ran for an EDDY-only selection"
+            ),
+        )
+
+    run_pipeline(subject_config, "run", selection=selection)
+
+    assert discoveries == expected_discoveries
+
+
+def test_stop_after_bet_ignores_downstream_jhu_resource(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_jhu_resource",
+        lambda *args: pytest.fail("downstream JHU resource was validated"),
+    )
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="04_bet"),
+    )
+
+    assert outcome.status == "PARTIAL_COMPLETE"
+
+
+def test_stop_after_input_audit_ignores_downstream_plan_source(
+    subject_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    plan = _simple_plan(subject_config, "INCLUDE", calls)
+    plan[-1] = replace(
+        plan[-1], source_paths=(tmp_path / "missing-report-source.py",)
+    )
+    monkeypatch.setattr(
+        orchestrator, "_build_plan", lambda config, runtime: plan
+    )
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="00_input_audit"),
+    )
+
+    assert outcome.status == "PARTIAL_COMPLETE"
+    assert calls == ["00_input_audit"]
+
+
+def test_stop_after_eddy_records_resume_as_exact_current(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    discoveries: list[str] = []
+    _install_fake_pipeline(
+        monkeypatch,
+        subject_config,
+        "INCLUDE",
+        calls,
+        discoveries,
+    )
+
+    prefix = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="05_eddy"),
+    )
+    calls_after_prefix = tuple(calls)
+    resumed = run_pipeline(
+        subject_config, "run", selection=StageSelection()
+    )
+
+    assert prefix.status == "PARTIAL_COMPLETE"
+    assert tuple(stage.stage for stage in prefix.stages) == STAGE_ORDER[:7]
+    assert calls_after_prefix == STAGE_ORDER[:7]
+    assert dict(resumed.stage_statuses)["05_eddy"] == "SKIPPED"
+    assert calls == list(STAGE_ORDER)
 
 
 @pytest.mark.parametrize(
@@ -2624,15 +2977,15 @@ def test_fake_normal_run_exact_current_skip_stale_partial_and_force_contracts(
 
     second = run_pipeline(subject_config, "run")
     assert calls == []
-    assert all(status == "skipped" for _, status in second.stage_statuses)
+    assert all(status == "SKIPPED" for _, status in second.stage_statuses)
 
     chosen = STAGE_ORDER.index("05_eddy")
     forced = run_pipeline(subject_config, "run", force_stage="05_eddy")
     assert all(
-        status == "skipped" for _, status in forced.stage_statuses[:chosen]
+        status == "SKIPPED" for _, status in forced.stage_statuses[:chosen]
     )
     assert all(
-        status == "completed" for _, status in forced.stage_statuses[chosen:]
+        status == "COMPLETED" for _, status in forced.stage_statuses[chosen:]
     )
     assert calls == list(STAGE_ORDER[chosen:])
 
