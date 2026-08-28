@@ -16,7 +16,9 @@ from pathlib import Path
 
 _ATLAS_PATH = "resources/jhu_48roi/JHU-ICBM-labels-2mm.nii.gz"
 _ATLAS_SHA256 = "974a0fd72d1214a29e58ccf33cf5aec989d937d999ae65f389dd6b3e1ffdbbad"
-_ALLOWED_EXECUTABLES = frozenset({"run_pipeline.sh", "setup_rocky.sh"})
+_ALLOWED_EXECUTABLES = frozenset(
+    {"run_eddy_batch.sh", "run_pipeline.sh", "setup_rocky.sh"}
+)
 _MAX_DEPTH = 32
 _MAX_ENTRIES = 20_000
 _MAX_TEXT_BYTES = 8 * 1024 * 1024

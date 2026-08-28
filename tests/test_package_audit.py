@@ -110,7 +110,7 @@ def test_exported_package_audit_is_clean_and_contains_only_the_historical_atlas(
     assert audit.cache_files == []
     assert audit.log_files == []
     assert audit.compiled_binaries == []
-    assert audit.executables == ["run_pipeline.sh", "setup_rocky.sh"]
+    assert audit.executables == ["run_eddy_batch.sh", "run_pipeline.sh", "setup_rocky.sh"]
     assert audit.sha256_by_path[ATLAS_RELATIVE] == ATLAS_SHA256
     assert audit.files == sorted(audit.files)
 
