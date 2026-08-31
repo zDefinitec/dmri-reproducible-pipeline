@@ -908,6 +908,29 @@ def test_merge_rejects_zero_successful_voxels_with_partition_counts(tmp_path):
             "success_count": 0,
             "error_999_count": 3,
             "other_error_count": 0,
+            "first_999_exceptions": [
+                {
+                    "worker": 1,
+                    "global_row": 1,
+                    "identifier": "fixture:FitFailure",
+                    "message": "synthetic fit failure",
+                    "report": "synthetic report for row 1",
+                },
+                {
+                    "worker": 1,
+                    "global_row": 2,
+                    "identifier": "fixture:FitFailure",
+                    "message": "synthetic fit failure",
+                    "report": "synthetic report for row 2",
+                },
+                {
+                    "worker": 2,
+                    "global_row": 3,
+                    "identifier": "fixture:FitFailure",
+                    "message": "synthetic fit failure",
+                    "report": "synthetic report for row 3",
+                },
+            ],
         }
     )
     metrics_path.write_text(json.dumps(metrics) + "\n", encoding="utf-8")
@@ -921,6 +944,40 @@ def test_merge_rejects_zero_successful_voxels_with_partition_counts(tmp_path):
         NODDIError,
         match=r"zero successful voxels: total=3, error_999=3, other_error=0",
     ):
+        merge_noddi(context)
+
+
+def test_merge_zero_success_still_validates_999_exception_samples(tmp_path):
+    context = _context(tmp_path, workers=2)
+    _prepare_merge_fixture(context)
+
+    error_path = context.stage_dir / "NODDI_error_code.nii"
+    error_image = nib.load(error_path)
+    mask = np.asarray(nib.load(context.cleaned_mask).dataobj) > 0
+    error_values = np.asarray(error_image.dataobj).copy()
+    error_values[mask] = 999
+    nib.save(nib.Nifti1Image(error_values, error_image.affine), error_path)
+    savemat(
+        context.stage_dir / "NODDI_params.mat",
+        {"mlps": np.ones((3, 8)), "error_code": np.full((3, 1), 999)},
+    )
+    metrics_path = context.stage_dir / "noddi_metrics.json"
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    metrics.update(
+        {
+            "success_count": 0,
+            "error_999_count": 3,
+            "other_error_count": 0,
+        }
+    )
+    metrics_path.write_text(json.dumps(metrics) + "\n", encoding="utf-8")
+    object.__setattr__(
+        context,
+        "command_runner",
+        lambda argv, log_path: SimpleNamespace(returncode=0),
+    )
+
+    with pytest.raises(NODDIError, match="exception samples"):
         merge_noddi(context)
 
 
@@ -1322,3 +1379,111 @@ def test_real_matlab_worker_exceptions_reach_merged_metrics(tmp_path):
     assert samples[0]["identifier"] == "fixture:FitFailure"
     assert samples[0]["message"] == "synthetic fit failure"
     assert "ThreeStageFittingVoxel" in samples[0]["report"]
+
+
+def test_real_matlab_worker_resume_preserves_and_validates_exception_samples(
+    tmp_path,
+):
+    executable = _real_matlab()
+
+    root = Path(__file__).parents[1]
+    fake_package = tmp_path / "portable-package"
+    script_dir = fake_package / "scripts" / "matlab"
+    fitting = fake_package / "vendor" / "noddi_toolbox_v1.05" / "fitting"
+    models = fake_package / "vendor" / "noddi_toolbox_v1.05" / "models"
+    script_dir.mkdir(parents=True)
+    fitting.mkdir(parents=True)
+    models.mkdir(parents=True)
+    for name in ("run_noddi_worker.m", "merge_noddi_workers.m"):
+        shutil.copy2(root / "scripts" / "matlab" / name, script_dir / name)
+    (fitting / "FSL2Protocol.m").write_text(
+        "function protocol=FSL2Protocol(varargin)\nprotocol=struct();\nend\n",
+        encoding="utf-8",
+    )
+    (fitting / "ThreeStageFittingVoxel.m").write_text(
+        "function [g,fg,m,fm,e]=ThreeStageFittingVoxel(signal,varargin)\n"
+        "if signal(1)<=3\n"
+        "error('fixture:FitFailure','synthetic fit failure');\n"
+        "end\n"
+        "g=1:8;fg=1;m=1:8;fm=2;e=0;\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (fitting / "SaveParamsAsNIfTI.m").write_text(
+        "function SaveParamsAsNIfTI(~,~,~,prefix)\n"
+        "names={'error_code','fibredirs_xvec','fibredirs_yvec',"
+        "'fibredirs_zvec','ficvf','fiso','fmin','kappa','odi'};\n"
+        "for i=1:numel(names)\n"
+        "f=fopen([prefix '_' names{i} '.nii'],'w');fclose(f);\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (models / "MakeModel.m").write_text(
+        "function model=MakeModel(name)\n"
+        "model=struct('name',name,'numParams',8);\nend\n",
+        encoding="utf-8",
+    )
+
+    stage = tmp_path / "stage"
+    private = stage / "nifti_matlab" / "matlab" / "@file_array" / "private"
+    private.mkdir(parents=True)
+    np.savetxt(stage / "bvals_rounded.txt", [[0]], fmt="%d")
+    np.savetxt(stage / "eddy_rotated_bvecs.txt", [[0], [0], [0]], fmt="%d")
+    (stage / "noddi_prepare.json").write_text("{}\n", encoding="utf-8")
+
+    quote = lambda path: str(path).replace("'", "''")
+    expression = (
+        f"root='{quote(stage)}';"
+        "roi=[1;2;3;4];mask=uint32(reshape(1:4,[2 2]));"
+        "idx=[1 1 1;1 2 1;2 1 1;2 2 1];"
+        "save(fullfile(root,'NODDI_roi.mat'),'roi','mask','idx','-v7.3');"
+        "names={'file2mat','mat2file','init'};"
+        "for i=1:numel(names),"
+        "p=fullfile(root,'nifti_matlab','matlab','@file_array','private',"
+        "[names{i} '.' mexext]);f=fopen(p,'w');fwrite(f,uint8(1));fclose(f);end;"
+        f"addpath('{quote(script_dir)}','-begin');"
+        "run_noddi_worker(root,1,1);"
+        "finalPath=fullfile(root,'worker_01_final.mat');"
+        "checkpointPath=fullfile(root,'worker_01_checkpoint.mat');"
+        "s=load(finalPath);"
+        "gsps=s.gsps;mlps=s.mlps;fobj_gs=s.fobj_gs;fobj_ml=s.fobj_ml;"
+        "error_code=s.error_code;metadata=s.metadata;"
+        "first999Exceptions=s.first999Exceptions(1:2);nextRow=3;"
+        "gsps(3:end,:)=nan;mlps(3:end,:)=nan;"
+        "fobj_gs(3:end)=nan;fobj_ml(3:end)=nan;error_code(3:end)=nan;"
+        "save(checkpointPath,'gsps','mlps','fobj_gs','fobj_ml','error_code',"
+        "'first999Exceptions','nextRow','metadata','-v7.3');"
+        "delete(finalPath);"
+        "run_noddi_worker(root,1,1);"
+        "merge_noddi_workers(root,1);"
+        "s=load(checkpointPath);"
+        "gsps=s.gsps;mlps=s.mlps;fobj_gs=s.fobj_gs;fobj_ml=s.fobj_ml;"
+        "error_code=s.error_code;metadata=s.metadata;"
+        "first999Exceptions=s.first999Exceptions;nextRow=s.nextRow;"
+        "first999Exceptions(1).global_row=2;"
+        "save(checkpointPath,'gsps','mlps','fobj_gs','fobj_ml','error_code',"
+        "'first999Exceptions','nextRow','metadata','-v7.3');"
+        "delete(finalPath);"
+        "rejected=false;"
+        "try,run_noddi_worker(root,1,1);"
+        "catch ME,rejected=strcmp(ME.identifier,'dmri:noddi:ResumeExceptions');end;"
+        "assert(rejected);fprintf('__DMRI_RESUME_TAMPER_REJECTED__=1\\n')"
+    )
+    completed = subprocess.run(
+        [str(executable), "-batch", expression],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        shell=False,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "__DMRI_RESUME_TAMPER_REJECTED__=1" in completed.stdout
+    metrics = json.loads(
+        (stage / "noddi_metrics.json").read_text(encoding="utf-8")
+    )
+    samples = metrics["first_999_exceptions"]
+    assert [sample["global_row"] for sample in samples] == [1, 2, 3]
+    assert [sample["worker"] for sample in samples] == [1, 1, 1]
+    assert all(sample["identifier"] == "fixture:FitFailure" for sample in samples)

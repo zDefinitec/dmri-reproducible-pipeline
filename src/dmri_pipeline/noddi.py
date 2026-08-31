@@ -663,36 +663,6 @@ def merge_noddi(context: NODDIContext) -> NODDIMerge:
     success_count = int(np.count_nonzero(success))
     error_999 = int(np.count_nonzero(mask & (error_values == 999)))
     other = total - success_count - error_999
-    if success_count == 0:
-        raise NODDIError(
-            "NODDI produced zero successful voxels: "
-            f"total={total}, error_999={error_999}, other_error={other}"
-        )
-    for name in ("NODDI_odi.nii", "NODDI_ficvf.nii", "NODDI_fiso.nii"):
-        values = arrays[name][success]
-        if not np.isfinite(values).all():
-            raise NODDIError(f"{name} must be finite for successful mask voxels")
-        if np.any((values < 0) | (values > 1)):
-            raise NODDIError(f"{name} must be within [0, 1] for successful voxels")
-    for name in (
-        "NODDI_kappa.nii",
-        "NODDI_fmin.nii",
-        "NODDI_fibredirs_xvec.nii",
-        "NODDI_fibredirs_yvec.nii",
-        "NODDI_fibredirs_zvec.nii",
-    ):
-        if not np.isfinite(arrays[name][success]).all():
-            raise NODDIError(f"{name} must be finite for successful mask voxels")
-    fibre_norms = np.sqrt(
-        arrays["NODDI_fibredirs_xvec.nii"][success] ** 2
-        + arrays["NODDI_fibredirs_yvec.nii"][success] ** 2
-        + arrays["NODDI_fibredirs_zvec.nii"][success] ** 2
-    )
-    if np.any(~np.isclose(fibre_norms, 1.0, atol=1e-4, rtol=0)):
-        raise NODDIError(
-            "NODDI fibre directions must have unit length for successful voxels"
-        )
-
     params = context.stage_dir / "NODDI_params.mat"
     if not _safe_regular_file(params):
         raise NODDIError("NODDI parameter MAT file is missing or unsafe")
@@ -801,6 +771,35 @@ def merge_noddi(context: NODDIContext) -> NODDIMerge:
             float(recorded), float(value), rel_tol=1e-7, abs_tol=1e-12
         ):
             raise NODDIError(f"NODDI metrics JSON is inconsistent for {key}")
+    if success_count == 0:
+        raise NODDIError(
+            "NODDI produced zero successful voxels: "
+            f"total={total}, error_999={error_999}, other_error={other}"
+        )
+    for name in ("NODDI_odi.nii", "NODDI_ficvf.nii", "NODDI_fiso.nii"):
+        values = arrays[name][success]
+        if not np.isfinite(values).all():
+            raise NODDIError(f"{name} must be finite for successful mask voxels")
+        if np.any((values < 0) | (values > 1)):
+            raise NODDIError(f"{name} must be within [0, 1] for successful voxels")
+    for name in (
+        "NODDI_kappa.nii",
+        "NODDI_fmin.nii",
+        "NODDI_fibredirs_xvec.nii",
+        "NODDI_fibredirs_yvec.nii",
+        "NODDI_fibredirs_zvec.nii",
+    ):
+        if not np.isfinite(arrays[name][success]).all():
+            raise NODDIError(f"{name} must be finite for successful mask voxels")
+    fibre_norms = np.sqrt(
+        arrays["NODDI_fibredirs_xvec.nii"][success] ** 2
+        + arrays["NODDI_fibredirs_yvec.nii"][success] ** 2
+        + arrays["NODDI_fibredirs_zvec.nii"][success] ** 2
+    )
+    if np.any(~np.isclose(fibre_norms, 1.0, atol=1e-4, rtol=0)):
+        raise NODDIError(
+            "NODDI fibre directions must have unit length for successful voxels"
+        )
     return NODDIMerge(
         MappingProxyType(maps),
         params,
