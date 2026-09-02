@@ -39,12 +39,115 @@ def test_cli_translates_pipeline_outcomes(
     monkeypatch.setattr(
         cli,
         "run_pipeline",
-        lambda config, mode, force_stage=None: PipelineOutcome(
+        lambda config, mode, force_stage=None, *, selection=None: PipelineOutcome(
             config.subject_id, status, (), config.subject_output
         ),
     )
 
     assert cli.main([str(subject_config.config_path)]) == exit_code
+
+
+def test_cli_forwards_only_stage_selection(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_pipeline(config, mode, force_stage=None, *, selection=None):
+        captured.update(
+            config=config,
+            mode=mode,
+            force_stage=force_stage,
+            selection=selection,
+        )
+        return PipelineOutcome(
+            config.subject_id, "STAGE_COMPLETE", (), config.subject_output
+        )
+
+    monkeypatch.setattr(cli, "load_config", lambda path: subject_config)
+    monkeypatch.setattr(cli, "run_pipeline", fake_run_pipeline)
+
+    assert cli.main(["--only-stage", "05_eddy", str(subject_config.config_path)]) == 0
+    assert captured["selection"] == orchestrator.StageSelection(only_stage="05_eddy")
+
+
+def test_cli_forwards_stop_after_selection(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_pipeline(config, mode, force_stage=None, *, selection=None):
+        captured.update(
+            config=config,
+            mode=mode,
+            force_stage=force_stage,
+            selection=selection,
+        )
+        return PipelineOutcome(
+            config.subject_id, "PARTIAL_COMPLETE", (), config.subject_output
+        )
+
+    monkeypatch.setattr(cli, "load_config", lambda path: subject_config)
+    monkeypatch.setattr(cli, "run_pipeline", fake_run_pipeline)
+
+    assert cli.main(["--stop-after", "04_bet", str(subject_config.config_path)]) == 0
+    assert captured["selection"] == orchestrator.StageSelection(stop_after="04_bet")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--stop-after", "04_bet", "--only-stage", "05_eddy", "subject.yaml"],
+        ["--validate-only", "--stop-after", "04_bet", "subject.yaml"],
+        ["--dry-run", "--only-stage", "05_eddy", "subject.yaml"],
+        ["--only-stage", "05_eddy", "--force-stage", "04_bet", "subject.yaml"],
+        ["--stop-after", "04_bet", "--force-stage", "05_eddy", "subject.yaml"],
+    ],
+)
+def test_cli_rejects_illegal_bounded_option_combinations_before_pipeline(
+    arguments: list[str], monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    called = False
+
+    def fail_if_loaded(_path: Path):
+        raise AssertionError("config should not be loaded")
+
+    def fake_run_pipeline(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("pipeline should not run")
+
+    monkeypatch.setattr(cli, "load_config", fail_if_loaded)
+    monkeypatch.setattr(cli, "run_pipeline", fake_run_pipeline)
+
+    assert cli.main(arguments) == 2
+    assert "ERROR:" in capsys.readouterr().err
+    assert not called
+
+
+def test_cli_accepts_forced_stage_inside_only_stage_selection(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda path: subject_config)
+    monkeypatch.setattr(
+        cli,
+        "run_pipeline",
+        lambda config, mode, force_stage=None, *, selection=None: PipelineOutcome(
+            config.subject_id, "STAGE_COMPLETE", (), config.subject_output
+        ),
+    )
+
+    assert (
+        cli.main(
+            [
+                "--only-stage",
+                "05_eddy",
+                "--force-stage",
+                "05_eddy",
+                str(subject_config.config_path),
+            ]
+        )
+        == 0
+    )
 
 
 def test_cli_translates_dependency_failure_to_exit_30(

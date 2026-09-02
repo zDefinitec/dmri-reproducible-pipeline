@@ -230,6 +230,119 @@ def _run_internal_wrapper(
     )
 
 
+def _run_eddy_batch_wrapper(
+    tmp_path: Path,
+    configurations: list[str],
+    *,
+    failed_configuration: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    capture = tmp_path / "batch-arguments.bin"
+    runner = tmp_path / "fake-run-pipeline.sh"
+    runner.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\0' \"$@\" >> \"$DMRI_BATCH_CAPTURE\"\n"
+        "if [[ \"${3:-}\" == \"${DMRI_BATCH_FAIL_CONFIGURATION:-}\" ]]; then\n"
+        "  exit 40\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    runner.chmod(0o755)
+    environment = os.environ.copy()
+    environment["DMRI_TEST_WRAPPER"] = str(PACKAGE_ROOT / "run_eddy_batch.sh")
+    environment["DMRI_FAKE_RUNNER"] = str(runner)
+    environment["DMRI_BATCH_CAPTURE"] = str(capture)
+    if failed_configuration is not None:
+        environment["DMRI_BATCH_FAIL_CONFIGURATION"] = failed_configuration
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                'source "$DMRI_TEST_WRAPPER"; '
+                '_dmri_run_eddy_batch_main "$DMRI_FAKE_RUNNER" "$@"'
+            ),
+            "eddy-batch-wrapper",
+            *configurations,
+        ],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, capture
+
+
+def _captured_batch_invocations(capture: Path) -> list[list[str]]:
+    arguments = capture.read_bytes().split(b"\0")[:-1]
+    return [
+        [argument.decode("utf-8") for argument in arguments[index : index + 3]]
+        for index in range(0, len(arguments), 3)
+    ]
+
+
+def test_eddy_batch_forwards_each_explicit_config_in_order(tmp_path: Path) -> None:
+    result, capture = _run_eddy_batch_wrapper(
+        tmp_path, ["first.yaml", "a config.yaml", "second.yaml"]
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _captured_batch_invocations(capture) == [
+        ["--only-stage", "05_eddy", "first.yaml"],
+        ["--only-stage", "05_eddy", "a config.yaml"],
+        ["--only-stage", "05_eddy", "second.yaml"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "configurations, message",
+    (
+        ([], "at least one CONFIG.yaml"),
+        (["--dry-run"], "configuration arguments must be explicit paths"),
+        (["first.yaml", "--dry-run"], "configuration arguments must be explicit paths"),
+    ),
+)
+def test_eddy_batch_rejects_invalid_arguments_before_running(
+    tmp_path: Path, configurations: list[str], message: str
+) -> None:
+    result, capture = _run_eddy_batch_wrapper(tmp_path, configurations)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert not capture.exists()
+
+
+def test_eddy_batch_continues_and_aggregates_participant_failures(
+    tmp_path: Path,
+) -> None:
+    result, capture = _run_eddy_batch_wrapper(
+        tmp_path,
+        ["first.yaml", "second.yaml", "third.yaml"],
+        failed_configuration="second.yaml",
+    )
+
+    assert result.returncode == 1
+    assert _captured_batch_invocations(capture) == [
+        ["--only-stage", "05_eddy", "first.yaml"],
+        ["--only-stage", "05_eddy", "second.yaml"],
+        ["--only-stage", "05_eddy", "third.yaml"],
+    ]
+    assert "EDDY_BATCH_START config=first.yaml" in result.stdout
+    assert "EDDY_BATCH_RESULT config=second.yaml exit_code=40" in result.stdout
+    assert "EDDY_BATCH_FAILED count=1 configs=second.yaml:40" in result.stderr
+
+
+def test_eddy_batch_reports_completion_when_all_configs_succeed(
+    tmp_path: Path,
+) -> None:
+    result, _ = _run_eddy_batch_wrapper(
+        tmp_path, ["first.yaml", "second.yaml", "third.yaml"]
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "EDDY_BATCH_COMPLETE count=3" in result.stdout
+
+
 @pytest.mark.parametrize(
     "omitted",
     (

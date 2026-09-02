@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -23,6 +24,12 @@ import numpy as np
 
 from .audit import InputAudit, audit_inputs, write_input_audit
 from .config import PipelineConfig
+from .eddy_timing import (
+    EddyTiming,
+    EddyTimingError,
+    read_eddy_timing,
+    write_eddy_timing,
+)
 from .fsl import (
     ExternalCommandError,
     FSLContext,
@@ -104,6 +111,11 @@ STAGE_ORDER = (
     "qc",
     "report",
 )
+
+_FSL_STAGES = frozenset(
+    {"01_denoise", "03_topup", "04_bet", "05_eddy", "09_jhu_48roi"}
+)
+_MATLAB_STAGES = frozenset({"08_noddi"})
 _CONTINUE_QC = {"INCLUDE", "INCLUDE_WITH_FLAGS", "INCLUDE_AFTER_REVIEW"}
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_ROOT = Path(__file__).resolve().parent
@@ -195,6 +207,61 @@ class PipelineOutcome:
     @property
     def stage_statuses(self) -> tuple[tuple[str, str], ...]:
         return tuple((stage.stage, stage.status) for stage in self.stages)
+
+
+@dataclass(frozen=True)
+class StageSelection:
+    """One optional bounded execution request over the fixed stage order."""
+
+    stop_after: str | None = None
+    only_stage: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.stop_after is not None and self.only_stage is not None:
+            raise ValueError("stop_after and only_stage are mutually exclusive")
+        for label, value in (
+            ("stop_after", self.stop_after),
+            ("only_stage", self.only_stage),
+        ):
+            if value is not None and value not in STAGE_ORDER:
+                raise ValueError(f"unknown {label} stage: {value}")
+
+    @property
+    def execution_names(self) -> tuple[str, ...]:
+        if self.only_stage is not None:
+            return (self.only_stage,)
+        if self.stop_after is not None:
+            return STAGE_ORDER[: STAGE_ORDER.index(self.stop_after) + 1]
+        return STAGE_ORDER
+
+    @property
+    def required_names(self) -> tuple[str, ...]:
+        if self.only_stage is not None:
+            return STAGE_ORDER[: STAGE_ORDER.index(self.only_stage) + 1]
+        return self.execution_names
+
+    @property
+    def success_status(self) -> str:
+        if self.only_stage is not None:
+            return "STAGE_COMPLETE"
+        if self.stop_after is not None:
+            return "PARTIAL_COMPLETE"
+        return "COMPLETE"
+
+
+def _validate_selection(
+    mode: str,
+    force_stage: str | None,
+    selection: StageSelection,
+) -> None:
+    if not isinstance(selection, StageSelection):
+        raise TypeError("selection must be a StageSelection")
+    if mode != "run" and selection != StageSelection():
+        raise ValueError("bounded execution is valid only for a normal run")
+    if force_stage is not None and force_stage not in selection.execution_names:
+        raise ValueError(
+            f"forced stage {force_stage} is outside the selected execution range"
+        )
 
 
 @dataclass
@@ -325,6 +392,8 @@ def run_pipeline(
     config: PipelineConfig,
     mode: str,
     force_stage: str | None = None,
+    *,
+    selection: StageSelection | None = None,
 ) -> PipelineOutcome:
     """Validate, describe, or execute one subject pipeline."""
     _require_config(config)
@@ -334,11 +403,13 @@ def run_pipeline(
         raise ValueError(f"unknown force stage: {force_stage}")
     if mode != "run" and force_stage is not None:
         raise ValueError("--force-stage is valid only for a normal run")
+    selection = StageSelection() if selection is None else selection
+    _validate_selection(mode, force_stage, selection)
 
     _validate_subject_input_separation(config)
     audit = audit_inputs(config)
-    validate_jhu_resource(_ATLAS_IMAGE, _ATLAS_XML)
     if mode != "run":
+        validate_jhu_resource(_ATLAS_IMAGE, _ATLAS_XML)
         runtime = _discover_runtime(config)
         plan = _build_plan(config, runtime)
         _validate_plan_sources(plan)
@@ -357,78 +428,92 @@ def run_pipeline(
 
     runtime = _Runtime(config)
     plan = _build_plan(config, runtime)
-    _validate_plan_sources(plan)
+    required_names = selection.required_names
+    required_plan = [spec for spec in plan if spec.name in required_names]
+    _validate_plan_sources(required_plan)
+    if "09_jhu_48roi" in required_names:
+        validate_jhu_resource(_ATLAS_IMAGE, _ATLAS_XML)
     _create_subject_root(config.subject_output)
-    gate_context = StageContext(
-        config=config,
-        package_root=_PACKAGE_ROOT,
-        subject_root=config.subject_output,
-        software=_base_software_provenance(),
-    )
-    gate_runner = StageRunner(gate_context)
     outcomes: list[PipelineStageOutcome] = []
     with _SubjectLock(config.subject_output):
+        if selection.only_stage is not None:
+            upstream_outcome = _require_current_upstream(
+                config,
+                runtime,
+                plan,
+                selection.only_stage,
+            )
+            if upstream_outcome is not None:
+                return upstream_outcome
+
+        gate_runner = _stage_runner(config, runtime, STAGE_ORDER[0])
         if force_stage is not None:
             gate_runner.invalidate_from(STAGE_ORDER, force_stage)
-        elif _safe_manual_review_transition(config, gate_runner, audit):
+        elif (
+            selection.only_stage is None
+            and "00_pre_denoise_motion_qc" in selection.execution_names
+            and _safe_manual_review_transition(config, gate_runner, audit)
+        ):
             gate_runner.invalidate_from(STAGE_ORDER, STAGE_ORDER[0])
 
-        gate_plan = plan[:2]
-        _reject_unsafe_existing_state(gate_runner, gate_plan)
-        for spec in gate_plan:
+        execution_names = selection.execution_names
+        gate_plan = [
+            spec for spec in plan[:2] if spec.name in execution_names
+        ]
+        gate_runs = tuple(
+            (spec, _stage_runner(config, runtime, spec.name))
+            for spec in gate_plan
+        )
+        for spec, runner in gate_runs:
+            _reject_unsafe_existing_state(runner, (spec,))
+        for spec, runner in gate_runs:
             print(f"[{spec.name}] checking")
-            result = gate_runner.run(spec)
+            result = runner.run(spec)
             outcome = _pipeline_stage_outcome(result)
             outcomes.append(outcome)
             print(f"[{spec.name}] {outcome.status}")
             if spec.name == "00_pre_denoise_motion_qc":
                 decision = _read_qc_decision(result.directory)
-                if decision.status == "EXCLUDE":
-                    return PipelineOutcome(
-                        config.subject_id,
-                        "EXCLUDED",
-                        tuple(outcomes),
-                        config.subject_output,
-                    )
-                if decision.status == "HOLD_FOR_REVIEW":
-                    return PipelineOutcome(
-                        config.subject_id,
-                        "HOLD_FOR_REVIEW",
-                        tuple(outcomes),
-                        config.subject_output,
-                    )
-                if decision.status not in _CONTINUE_QC:
-                    raise StageStateError(
-                        f"unsupported stripe-QC decision: {decision.status}"
-                    )
-        runtime.require_fsl()
-        runtime.require_matlab()
-        plan = _build_plan(config, runtime)
-        _validate_plan_sources(plan)
-        runner = StageRunner(
-            StageContext(
-                config=config,
-                package_root=_PACKAGE_ROOT,
-                subject_root=config.subject_output,
-                software=_software_provenance(runtime),
-            )
+                terminal = _qc_pipeline_outcome(
+                    config, decision, tuple(outcomes)
+                )
+                if terminal is not None:
+                    return terminal
+
+        if selection == StageSelection():
+            runtime.require_fsl()
+            runtime.require_matlab()
+            plan = _build_plan(config, runtime)
+            _validate_plan_sources(plan)
+
+        scientific_plan = [
+            spec for spec in plan[2:] if spec.name in execution_names
+        ]
+        stage_runs = tuple(
+            (spec, _stage_runner(config, runtime, spec.name))
+            for spec in scientific_plan
         )
-        scientific_plan = plan[2:]
-        _reject_unsafe_existing_state(runner, scientific_plan)
-        for spec in scientific_plan:
+        for spec, runner in stage_runs:
+            _reject_unsafe_existing_state(runner, (spec,))
+        for spec, runner in stage_runs:
             print(f"[{spec.name}] checking")
             result = runner.run(spec)
             outcome = _pipeline_stage_outcome(result)
             outcomes.append(outcome)
             print(f"[{spec.name}] {outcome.status}")
     return PipelineOutcome(
-        config.subject_id, "COMPLETE", tuple(outcomes), config.subject_output
+        config.subject_id,
+        selection.success_status,
+        tuple(outcomes),
+        config.subject_output,
     )
 
 
 def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
     root = config.subject_output
     paths = _paths(config)
+    qc_software = _stage_software_provenance(runtime, "qc")
+    report_software = _stage_software_provenance(runtime, "report")
     stripe_detail_paths = expected_stripe_detail_paths(
         config, root / "00_pre_denoise_motion_qc"
     )
@@ -555,16 +640,23 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
             raise PipelineOutputError(str(error)) from error
 
     def eddy_action(work: Path) -> None:
+        stage_started = time.monotonic()
         installation = runtime.require_fsl()
         audit_value = audit_inputs(config)
         fsl_context = _fsl_context(
             config, installation, audit_value, eddy_dir=work
         )
         log = work / "eddy_fsl.log"
-        run_fsl_command(build_eddy_command(fsl_context), log, installation.environment)
+        eddy_started = time.monotonic()
+        run_fsl_command(
+            build_eddy_command(fsl_context), log, installation.environment
+        )
+        eddy_finished = time.monotonic()
+        quad_started = time.monotonic()
         run_fsl_command(
             build_eddy_quad_command(fsl_context), log, installation.environment
         )
+        quad_finished = time.monotonic()
         bvals = _load_text(config.bvals, "b-values").reshape(-1)
         outliers = _load_eddy_outlier_map(
             Path(f"{fsl_context.eddy_prefix}.eddy_outlier_map"),
@@ -585,6 +677,15 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
                 "data_file_bvals": config.bvals,
                 "qc_path": fsl_context.eddy_quad_output,
             },
+        )
+        stage_finished = time.monotonic()
+        write_eddy_timing(
+            work / "eddy_timing.json",
+            EddyTiming(
+                eddy_command_seconds=eddy_finished - eddy_started,
+                eddy_quad_seconds=quad_finished - quad_started,
+                stage_action_seconds=stage_finished - stage_started,
+            ),
         )
 
     def dti_action(work: Path) -> None:
@@ -654,7 +755,7 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
         )
 
     def qc_action(work: Path) -> None:
-        generate_all_qc(_qc_context(config, work, paths, runtime))
+        generate_all_qc(_qc_context(config, work, paths, qc_software))
 
     def report_action(work: Path) -> None:
         write_final_report(
@@ -662,7 +763,7 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
                 config,
                 work,
                 paths,
-                runtime,
+                report_software,
                 stripe_detail_paths=stripe_detail_paths,
             )
         )
@@ -786,7 +887,7 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
                 paths["topup_fieldcoef"],
                 paths["topup_movpar"],
             ),
-            (*common, module("fsl")),
+            (*common, module("fsl"), module("eddy_timing")),
         ),
         StageSpec(
             STAGE_ORDER[7],
@@ -891,7 +992,14 @@ def _build_plan(config: PipelineConfig, runtime: _Runtime) -> list[StageSpec]:
                 paths,
                 stripe_detail_paths=stripe_detail_paths,
             ),
-            (*common, module("report"), module("qc"), module("summary"), module("state")),
+            (
+                *common,
+                module("report"),
+                module("qc"),
+                module("summary"),
+                module("state"),
+                module("eddy_timing"),
+            ),
             (_ATLAS_PROVENANCE,),
         ),
     ]
@@ -936,6 +1044,7 @@ def _paths(config: PipelineConfig) -> dict[str, Path]:
         "eddy_residuals": Path(f"{eddy_prefix}.eddy_residuals.nii.gz"),
         "eddy_cnr": Path(f"{eddy_prefix}.eddy_cnr_maps.nii.gz"),
         "eddy_quad_json": root / "05_eddy" / "eddy_quad.json",
+        "eddy_timing": root / "05_eddy" / "eddy_timing.json",
         "dti_fa": root / "06_dti" / "FA.nii.gz",
         "dti_metrics": root / "06_dti" / "dti_metrics.json",
         "dki_metrics": root / "07_dki" / "dki_metrics.json",
@@ -1082,12 +1191,12 @@ def _qc_context(
     config: PipelineConfig,
     work: Path,
     paths: Mapping[str, Path],
-    runtime: _Runtime,
+    software: Mapping[str, str],
 ) -> StageQCContext:
     root = config.subject_output
     return StageQCContext(
         stage_context=StageContext(
-            config, _PACKAGE_ROOT, root, _software_provenance(runtime)
+            config, _PACKAGE_ROOT, root, software
         ),
         output_directory=work,
         bvals=config.bvals,
@@ -1127,7 +1236,7 @@ def _report_context(
     config: PipelineConfig,
     work: Path,
     paths: Mapping[str, Path],
-    runtime: _Runtime,
+    software: Mapping[str, str],
     *,
     stripe_detail_paths: Sequence[Path],
 ) -> ReportContext:
@@ -1135,7 +1244,7 @@ def _report_context(
     records = tuple(root / name / ".stage_complete.json" for name in REPORT_STAGE_ORDER)
     return ReportContext(
         stage_context=StageContext(
-            config, _PACKAGE_ROOT, root, _software_provenance(runtime)
+            config, _PACKAGE_ROOT, root, software
         ),
         output_directory=work,
         qc_manifest_json=paths["qc_manifest"],
@@ -1160,6 +1269,7 @@ def _report_context(
         eddy_outlier_map=paths["eddy_outlier_map"],
         eddy_outlier_report=paths["eddy_outlier_report"],
         eddy_quad_json=paths["eddy_quad_json"],
+        eddy_timing_json=paths["eddy_timing"],
         noddi_error_codes=paths["noddi_error"],
         summary_json=paths["summary_json"],
         global_csv=paths["summary_global"],
@@ -1232,6 +1342,7 @@ def _report_input_paths(
         paths["eddy_outlier_map"],
         paths["eddy_outlier_report"],
         paths["eddy_quad_json"],
+        paths["eddy_timing"],
         paths["noddi_error"],
         paths["summary_json"],
         paths["summary_global"],
@@ -1597,9 +1708,14 @@ def _validate_eddy_outputs(
         Path(f"{prefix}.eddy_residuals.nii.gz"),
         Path(f"{prefix}.eddy_cnr_maps.nii.gz"),
         work / "eddy_quad.json",
+        work / "eddy_timing.json",
         work / "eddy_fsl.log",
     )
     _require_regular_files(required)
+    try:
+        read_eddy_timing(work / "eddy_timing.json")
+    except EddyTimingError as error:
+        raise StageStateError(f"invalid EDDY timing evidence: {error}") from error
     if audit is None or bvals_path is None:
         raise StageStateError("EDDY validation requires the fresh input audit and b-values")
     expected_shape = tuple(audit.pa_shape)
@@ -2679,8 +2795,39 @@ def _discover_runtime(config: PipelineConfig) -> _Runtime:
 
 
 def _software_provenance(runtime: _Runtime) -> Mapping[str, str]:
-    fsl = runtime.require_fsl()
-    matlab = runtime.require_matlab()
+    evidence = dict(_base_software_provenance())
+    evidence.update(_fsl_software_provenance(runtime.require_fsl()))
+    evidence.update(_matlab_software_provenance(runtime.require_matlab()))
+    return MappingProxyType(dict(sorted(evidence.items())))
+
+
+def _stage_software_provenance(
+    runtime: _Runtime, stage_name: str
+) -> Mapping[str, str]:
+    if stage_name not in STAGE_ORDER:
+        raise ValueError(f"unknown stage: {stage_name}")
+    evidence = dict(_base_software_provenance())
+    if stage_name in _FSL_STAGES:
+        evidence.update(_fsl_software_provenance(runtime.require_fsl()))
+    if stage_name in _MATLAB_STAGES:
+        evidence.update(_matlab_software_provenance(runtime.require_matlab()))
+    return MappingProxyType(dict(sorted(evidence.items())))
+
+
+def _stage_runner(
+    config: PipelineConfig, runtime: _Runtime, stage_name: str
+) -> StageRunner:
+    return StageRunner(
+        StageContext(
+            config=config,
+            package_root=_PACKAGE_ROOT,
+            subject_root=config.subject_output,
+            software=_stage_software_provenance(runtime, stage_name),
+        )
+    )
+
+
+def _fsl_software_provenance(fsl: FSLInstallation) -> Mapping[str, str]:
     material_files = {
         "fsl_topup": fsl.topup,
         "fsl_applytopup": fsl.applytopup,
@@ -2696,15 +2843,9 @@ def _software_provenance(runtime: _Runtime) -> Mapping[str, str]:
         "fsl_b02b0_no_subsampling_config": fsl.b02b0_no_subsampling_config,
         "fsl_fa_to_standard_config": fsl.fa_to_standard_config,
         "fsl_standard_fa": fsl.standard_fa,
-        "matlab_executable": matlab.executable,
     }
     values = {
-        "python": sys.version.split()[0],
-        "numpy": np.__version__,
-        "nibabel": nib.__version__,
         "fsl_eddy": fsl.eddy.name,
-        "matlab": matlab.version,
-        "matlab_mexext": matlab.mexext,
     }
     for label, path in material_files.items():
         values[f"{label}_sha256"] = _software_sha256(path, label)
@@ -2718,6 +2859,20 @@ def _software_provenance(runtime: _Runtime) -> Mapping[str, str]:
             path, f"FSL runtime {logical.as_posix()}"
         )
     return MappingProxyType(dict(sorted(values.items())))
+
+
+def _matlab_software_provenance(
+    matlab: MATLABInstallation,
+) -> Mapping[str, str]:
+    return MappingProxyType(
+        {
+            "matlab": matlab.version,
+            "matlab_executable_sha256": _software_sha256(
+                matlab.executable, "matlab_executable"
+            ),
+            "matlab_mexext": matlab.mexext,
+        }
+    )
 
 
 def _software_sha256(path: Path, label: str) -> str:
@@ -2887,6 +3042,27 @@ def _reject_unsafe_existing_state(
                 )
 
 
+def _require_current_upstream(
+    config: PipelineConfig,
+    runtime: _Runtime,
+    plan: Sequence[StageSpec],
+    selected_stage: str,
+) -> PipelineOutcome | None:
+    for spec in plan[: STAGE_ORDER.index(selected_stage)]:
+        runner = _stage_runner(config, runtime, spec.name)
+        _reject_unsafe_existing_state(runner, (spec,))
+        if not runner.is_current(spec):
+            raise StageStateError(
+                f"upstream stage is not exact-current: {spec.name}"
+            )
+        if spec.name == "00_pre_denoise_motion_qc":
+            decision = _read_qc_decision(runner.final_dir(spec.name))
+            terminal = _qc_pipeline_outcome(config, decision, ())
+            if terminal is not None:
+                return terminal
+    return None
+
+
 def _read_qc_decision(directory: Path) -> QCDecision:
     payload = _read_json(directory / "stripe_decision.json", "stripe decision")
     try:
@@ -2904,9 +3080,38 @@ def _read_qc_decision(directory: Path) -> QCDecision:
         raise StageStateError("stripe decision record is malformed") from error
 
 
+def _qc_pipeline_outcome(
+    config: PipelineConfig,
+    decision: QCDecision,
+    stages: tuple[PipelineStageOutcome, ...],
+) -> PipelineOutcome | None:
+    if decision.status == "EXCLUDE":
+        return PipelineOutcome(
+            config.subject_id,
+            "EXCLUDED",
+            stages,
+            config.subject_output,
+        )
+    if decision.status == "HOLD_FOR_REVIEW":
+        return PipelineOutcome(
+            config.subject_id,
+            "HOLD_FOR_REVIEW",
+            stages,
+            config.subject_output,
+        )
+    if decision.status not in _CONTINUE_QC:
+        raise StageStateError(
+            f"unsupported stripe-QC decision: {decision.status}"
+        )
+    return None
+
+
 def _pipeline_stage_outcome(outcome: StageOutcome) -> PipelineStageOutcome:
     return PipelineStageOutcome(
-        outcome.stage, outcome.status, outcome.directory, outcome.record_path
+        outcome.stage,
+        outcome.status.upper(),
+        outcome.directory,
+        outcome.record_path,
     )
 
 

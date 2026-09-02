@@ -1150,6 +1150,8 @@ def build_eddy_command(context: FSLContext) -> list[str]:
         f"--bvecs={context.bvecs}",
         f"--bvals={context.bvals}",
         f"--topup={context.topup_prefix}",
+        "--fwhm=0",
+        "--flm=quadratic",
         "--repol",
         "--cnr_maps",
         "--residuals",

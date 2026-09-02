@@ -110,7 +110,7 @@ def test_exported_package_audit_is_clean_and_contains_only_the_historical_atlas(
     assert audit.cache_files == []
     assert audit.log_files == []
     assert audit.compiled_binaries == []
-    assert audit.executables == ["run_pipeline.sh", "setup_rocky.sh"]
+    assert audit.executables == ["run_eddy_batch.sh", "run_pipeline.sh", "setup_rocky.sh"]
     assert audit.sha256_by_path[ATLAS_RELATIVE] == ATLAS_SHA256
     assert audit.files == sorted(audit.files)
 
@@ -577,6 +577,55 @@ def test_required_documentation_covers_the_public_contract() -> None:
     ):
         assert filename in outputs, filename
 
+    for required in (
+        "05_eddy/eddy_timing.json",
+        "schema_version",
+        "eddy_command_seconds",
+        "eddy_quad_seconds",
+        "stage_action_seconds",
+        "eddy_command_includes_cnr_maps",
+        "eddy_command_includes_residuals",
+    ):
+        assert required in outputs, required
+
+    public_docs = {
+        relative: (PACKAGE_ROOT / relative).read_text(encoding="utf-8")
+        for relative in (
+            "README.md",
+            "docs/PIPELINE.md",
+            "docs/TROUBLESHOOTING.md",
+            "docs/REMOTE_VSCODE.md",
+        )
+    }
+    public_text = "\n".join(public_docs.values())
+    for command in (
+        "./run_pipeline.sh --stop-after 04_bet config/subject.yaml",
+        "./run_pipeline.sh --only-stage 05_eddy config/subject.yaml",
+        "./run_eddy_batch.sh config/subject-001.yaml config/subject-002.yaml",
+        "./run_pipeline.sh config/subject.yaml",
+    ):
+        assert command in public_text, command
+
+
+def test_split_eddy_documentation_requires_rocky_remote_tmux_context() -> None:
+    documents = {
+        relative: (PACKAGE_ROOT / relative).read_text(encoding="utf-8")
+        for relative in (
+            "README.md",
+            "docs/PIPELINE.md",
+            "docs/TROUBLESHOOTING.md",
+        )
+    }
+    required_context = (
+        "inside a tmux session in a VS Code Remote terminal connected to Rocky"
+    )
+    for relative, text in documents.items():
+        assert required_context in " ".join(text.split()), relative
+    assert "preferably inside `tmux`" not in documents["README.md"]
+    assert "`--force-stage NAME` is valid only for a normal run." not in documents[
+        "docs/PIPELINE.md"
+    ]
+
 
 def test_vscode_recommendations_are_valid_and_non_secret() -> None:
     payload = json.loads(
@@ -615,9 +664,9 @@ def test_remote_vscode_document_keeps_compute_on_server() -> None:
 
 
 def test_release_metadata_is_rocky_only_and_consistent() -> None:
-    assert (PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "2.0.0"
+    assert (PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "2.1.0"
     pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "2.0.0"' in pyproject
+    assert 'version = "2.1.0"' in pyproject
     for relative in (
         "README.md",
         "docs/INSTALL_ROCKY.md",

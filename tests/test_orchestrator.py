@@ -15,6 +15,7 @@ import dmri_pipeline.stripe_qc as stripe_qc
 from dmri_pipeline.orchestrator import (
     STAGE_ORDER,
     PipelineOutcome,
+    StageSelection,
     _SubjectLock,
     _dry_run,
     _dry_run_commands,
@@ -53,6 +54,17 @@ EXPECTED_ORDER = (
     "qc",
     "report",
 )
+
+BASE = {
+    "nibabel": "base-nibabel",
+    "numpy": "base-numpy",
+    "python": "base-python",
+}
+FSL = {"fsl_eddy": "fake-eddy", "fsl_eddy_sha256": "fake-fsl-sha256"}
+MATLAB = {
+    "matlab": "fake-matlab",
+    "matlab_executable_sha256": "fake-matlab-sha256",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -108,8 +120,13 @@ def test_missing_explicit_plan_source_has_typed_dependency_semantics(
 def test_build_plan_wires_canonical_and_rotated_gradients(subject_config) -> None:
     plan = {stage.name: stage for stage in build_plan(subject_config)}
     root = subject_config.subject_output
+    timing = root / "05_eddy" / "eddy_timing.json"
+    timing_source = Path(orchestrator.__file__).with_name("eddy_timing.py")
 
     assert root / "00_input_audit" / "bvecs_fsl_3xN" in plan["05_eddy"].input_paths
+    assert timing_source in plan["05_eddy"].source_paths
+    assert timing in plan["report"].input_paths
+    assert timing_source in plan["report"].source_paths
     rotated = root / "05_eddy" / "eddy_unwarped_images.eddy_rotated_bvecs"
     for name in ("06_dti", "07_dki", "07_dki_direct", "08_noddi"):
         assert rotated in plan[name].input_paths
@@ -272,8 +289,8 @@ def test_exclusion_stops_before_external_dependency_discovery(
 
     assert outcome.status == "EXCLUDED"
     assert outcome.stage_statuses == (
-        ("00_input_audit", "completed"),
-        ("00_pre_denoise_motion_qc", "completed"),
+        ("00_input_audit", "COMPLETED"),
+        ("00_pre_denoise_motion_qc", "COMPLETED"),
     )
 
 
@@ -650,6 +667,19 @@ def _populate_valid_eddy(work: Path, subject_config) -> None:
         ),
         encoding="utf-8",
     )
+    (work / "eddy_timing.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "eddy_command_seconds": 7200.0,
+                "eddy_quad_seconds": 240.0,
+                "stage_action_seconds": 7440.5,
+                "eddy_command_includes_cnr_maps": True,
+                "eddy_command_includes_residuals": True,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_successful_noddi_outputs_validate_and_promote_with_real_log_name(
@@ -884,6 +914,148 @@ def test_eddy_validator_accepts_complete_finite_outputs_and_quad_source(
 
     assert work / "eddy_quad" / "qc.json" in outputs
     assert work / "eddy_quad.json" in outputs
+    assert work / "eddy_timing.json" in outputs
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+            "unexpected": 1,
+        },
+        {
+            "schema_version": True,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": True,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": float("nan"),
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": float("inf"),
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": -1.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": False,
+            "eddy_command_includes_residuals": True,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7440.5,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": False,
+        },
+        {
+            "schema_version": 1,
+            "eddy_command_seconds": 7200.0,
+            "eddy_quad_seconds": 240.0,
+            "stage_action_seconds": 7439.0,
+            "eddy_command_includes_cnr_maps": True,
+            "eddy_command_includes_residuals": True,
+        },
+    ),
+    ids=(
+        "missing-key",
+        "extra-key",
+        "boolean-version",
+        "boolean-duration",
+        "nan-duration",
+        "infinite-duration",
+        "negative-duration",
+        "false-cnr-flag",
+        "false-residuals-flag",
+        "impossible-total",
+    ),
+)
+def test_eddy_validator_rejects_ambiguous_timing_evidence(
+    subject_config, tmp_path: Path, payload: dict[str, object]
+) -> None:
+    work = tmp_path / "eddy"
+    work.mkdir()
+    _populate_valid_eddy(work, subject_config)
+    (work / "eddy_timing.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    with pytest.raises(StageStateError, match="timing"):
+        _validate_eddy_outputs(
+            work, audit_inputs(subject_config), subject_config.bvals
+        )
+
+
+def test_eddy_validator_requires_timing_evidence(
+    subject_config, tmp_path: Path
+) -> None:
+    work = tmp_path / "eddy"
+    work.mkdir()
+    _populate_valid_eddy(work, subject_config)
+    (work / "eddy_timing.json").unlink()
+
+    with pytest.raises(StageStateError, match="eddy_timing"):
+        _validate_eddy_outputs(
+            work, audit_inputs(subject_config), subject_config.bvals
+        )
+
+
+def test_eddy_validator_rejects_malformed_timing_json(
+    subject_config, tmp_path: Path
+) -> None:
+    work = tmp_path / "eddy"
+    work.mkdir()
+    _populate_valid_eddy(work, subject_config)
+    (work / "eddy_timing.json").write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(StageStateError, match="timing"):
+        _validate_eddy_outputs(
+            work, audit_inputs(subject_config), subject_config.bvals
+        )
 
 
 def test_eddy_quad_source_tree_is_validated_before_json_is_derived(
@@ -1414,6 +1586,58 @@ def _fake_runtime(tmp_path: Path, subject_config) -> tuple[orchestrator._Runtime
     return runtime, [*tools.values(), *resources, matlab]
 
 
+def test_eddy_action_records_complete_monotonic_command_and_stage_durations(
+    subject_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _ = _fake_runtime(tmp_path, subject_config)
+    eddy = {
+        stage.name: stage
+        for stage in orchestrator._build_plan(subject_config, runtime)
+    }["05_eddy"]
+    work = tmp_path / "eddy-work"
+    work.mkdir()
+    ticks = iter((10.0, 10.0, 130.0, 130.0, 145.0, 146.0))
+    clock = type(
+        "SyntheticClock", (), {"monotonic": staticmethod(lambda: next(ticks))}
+    )
+    monkeypatch.setattr(orchestrator, "time", clock, raising=False)
+
+    def fake_fsl_command(argv, log_path: Path, environment):
+        executable = Path(argv[0]).name
+        assert dict(environment) == runtime.fsl.environment
+        if executable == "eddy":
+            _populate_valid_eddy_core(work, subject_config)
+        elif executable == "eddy_quad":
+            _populate_valid_quad(work / "eddy_quad", work, subject_config)
+        else:
+            pytest.fail(f"unexpected FSL command: {executable}")
+        return type(
+            "SyntheticCommandResult",
+            (),
+            {"returncode": 0, "stderr": "", "stdout": ""},
+        )()
+
+    monkeypatch.setattr(orchestrator, "run_fsl_command", fake_fsl_command)
+
+    eddy.action(work)
+
+    timing_path = work / "eddy_timing.json"
+    assert timing_path.is_file()
+    payload = json.loads(
+        timing_path.read_text(encoding="utf-8")
+    )
+    assert payload == {
+        "schema_version": 1,
+        "eddy_command_seconds": 120.0,
+        "eddy_quad_seconds": 15.0,
+        "stage_action_seconds": 136.0,
+        "eddy_command_includes_cnr_maps": True,
+        "eddy_command_includes_residuals": True,
+    }
+
+
 def test_software_provenance_tracks_every_material_fsl_and_matlab_file(
     subject_config, tmp_path: Path
 ) -> None:
@@ -1444,6 +1668,84 @@ def test_software_provenance_tracks_every_material_fsl_and_matlab_file(
         after = dict(_software_provenance(runtime))
         assert after[key] != before[key], path
         path.write_bytes(original)
+
+
+def test_stage_software_provenance_discovers_only_the_stage_dependency(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fsl_installation = object()
+    matlab_installation = object()
+    monkeypatch.setattr(orchestrator, "_base_software_provenance", lambda: BASE)
+    monkeypatch.setattr(
+        orchestrator,
+        "_fsl_software_provenance",
+        lambda installation: FSL
+        if installation is fsl_installation
+        else pytest.fail("unexpected FSL installation"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_matlab_software_provenance",
+        lambda installation: MATLAB
+        if installation is matlab_installation
+        else pytest.fail("unexpected MATLAB installation"),
+        raising=False,
+    )
+
+    def fresh_runtime_and_trace() -> tuple[orchestrator._Runtime, list[str]]:
+        discoveries: list[str] = []
+        monkeypatch.setattr(
+            orchestrator,
+            "discover_fsl",
+            lambda config: discoveries.append("fsl") or fsl_installation,
+        )
+        monkeypatch.setattr(
+            orchestrator,
+            "discover_matlab",
+            lambda config: discoveries.append("matlab") or matlab_installation,
+        )
+        return orchestrator._Runtime(subject_config), discoveries
+
+    runtime, discoveries = fresh_runtime_and_trace()
+    assert (
+        orchestrator._stage_software_provenance(runtime, "00_input_audit")
+        == BASE
+    )
+    assert discoveries == []
+
+    assert orchestrator._stage_software_provenance(runtime, "05_eddy") == BASE | FSL
+    assert discoveries == ["fsl"]
+
+    runtime, discoveries = fresh_runtime_and_trace()
+    assert (
+        orchestrator._stage_software_provenance(runtime, "08_noddi")
+        == BASE | MATLAB
+    )
+    assert discoveries == ["matlab"]
+
+
+def test_stage_software_provenance_rejects_unknown_stage_without_discovery(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    discoveries: list[str] = []
+    monkeypatch.setattr(
+        orchestrator,
+        "discover_fsl",
+        lambda config: discoveries.append("fsl") or object(),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "discover_matlab",
+        lambda config: discoveries.append("matlab") or object(),
+    )
+
+    with pytest.raises(ValueError, match="unknown stage: not_a_stage"):
+        orchestrator._stage_software_provenance(
+            orchestrator._Runtime(subject_config), "not_a_stage"
+        )
+
+    assert discoveries == []
 
 
 def test_software_provenance_rejects_symlinked_material_dependency(
@@ -1781,6 +2083,9 @@ def test_preoutput_plan_tracks_more_than_twelve_union_selected_detail_volumes(
     assert second.status == "skipped"
     assert len(captured_contexts) == 1
     assert set(captured_contexts[0].stripe_detail_files) == expected
+    assert captured_contexts[0].eddy_timing_json == (
+        config.subject_output / "05_eddy" / "eddy_timing.json"
+    )
     assert all(path.is_file() for path in expected)
     assert report_runner.is_current(report)
     record = json.loads(first.record_path.read_text(encoding="utf-8"))
@@ -2208,7 +2513,7 @@ def test_real_public_plan_include_with_flags_completes_then_skips_current_rerun(
         / "vols_no_outliers.txt"
     ).exists()
     assert first.stage_statuses == tuple(
-        (name, "completed") for name in STAGE_ORDER
+        (name, "COMPLETED") for name in STAGE_ORDER
     )
     assert len(first.stages) == 15
     assert all(
@@ -2221,7 +2526,7 @@ def test_real_public_plan_include_with_flags_completes_then_skips_current_rerun(
     )
     assert second.status == "COMPLETE"
     assert second.stage_statuses == tuple(
-        (name, "skipped") for name in STAGE_ORDER
+        (name, "SKIPPED") for name in STAGE_ORDER
     )
     assert tuple(action_calls) == calls_after_first
     assert discoveries == ["fsl", "matlab", "fsl", "matlab"]
@@ -2420,21 +2725,388 @@ def _install_fake_pipeline(
     subject_config,
     decision: str,
     calls: list[str],
+    discoveries: list[str] | None = None,
 ) -> None:
     monkeypatch.setattr(
         orchestrator,
         "_build_plan",
         lambda config, runtime: _simple_plan(config, decision, calls),
     )
+    if discoveries is None:
+        monkeypatch.setattr(
+            orchestrator._Runtime, "require_fsl", lambda self: object()
+        )
+        monkeypatch.setattr(
+            orchestrator._Runtime, "require_matlab", lambda self: object()
+        )
+    else:
+        def discover_fsl(_config):
+            discoveries.append("fsl")
+            return object()
+
+        def discover_matlab(_config):
+            discoveries.append("matlab")
+            return object()
+
+        monkeypatch.setattr(orchestrator, "discover_fsl", discover_fsl)
+        monkeypatch.setattr(orchestrator, "discover_matlab", discover_matlab)
+    monkeypatch.setattr(orchestrator, "_base_software_provenance", lambda: BASE)
     monkeypatch.setattr(
-        orchestrator._Runtime, "require_fsl", lambda self: object()
+        orchestrator,
+        "_fsl_software_provenance",
+        lambda installation: FSL,
+        raising=False,
     )
     monkeypatch.setattr(
-        orchestrator._Runtime, "require_matlab", lambda self: object()
+        orchestrator,
+        "_matlab_software_provenance",
+        lambda installation: MATLAB,
+        raising=False,
     )
     monkeypatch.setattr(
-        orchestrator, "_software_provenance", lambda runtime: {"full": "1"}
+        orchestrator,
+        "_software_provenance",
+        lambda runtime: BASE | FSL | MATLAB,
     )
+
+
+def _seed_fake_stages(
+    subject_config,
+    decision: str,
+    calls: list[str],
+    through: str,
+) -> None:
+    subject_config.subject_output.mkdir(parents=True, exist_ok=True)
+    runtime = orchestrator._Runtime(subject_config)
+    plan = _simple_plan(subject_config, decision, calls)
+    stop = STAGE_ORDER.index(through) + 1
+    for spec in plan[:stop]:
+        orchestrator._stage_runner(
+            subject_config, runtime, spec.name
+        ).run(spec)
+
+
+def test_stop_after_bet_executes_exact_prefix(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="04_bet"),
+    )
+
+    assert outcome.status == "PARTIAL_COMPLETE"
+    assert tuple(stage.stage for stage in outcome.stages) == STAGE_ORDER[:6]
+    assert calls == list(STAGE_ORDER[:6])
+    assert not (subject_config.subject_output / "05_eddy").exists()
+
+
+def test_stop_after_input_audit_does_not_read_qc_decision(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    monkeypatch.setattr(
+        orchestrator,
+        "_read_qc_decision",
+        lambda directory: pytest.fail(
+            f"QC decision was read outside the selected range: {directory}"
+        ),
+    )
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="00_input_audit"),
+    )
+
+    assert outcome.status == "PARTIAL_COMPLETE"
+    assert tuple(stage.stage for stage in outcome.stages) == (
+        "00_input_audit",
+    )
+    assert calls == ["00_input_audit"]
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_status", "expected_exit_code"),
+    [
+        ("EXCLUDE", "EXCLUDED", 20),
+        ("HOLD_FOR_REVIEW", "HOLD_FOR_REVIEW", 21),
+    ],
+)
+def test_stop_after_qc_preserves_terminal_gate_outcome(
+    subject_config,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: str,
+    expected_status: str,
+    expected_exit_code: int,
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, decision, calls)
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(
+            stop_after="00_pre_denoise_motion_qc"
+        ),
+    )
+    recorded = orchestrator._read_qc_decision(
+        subject_config.subject_output / "00_pre_denoise_motion_qc"
+    )
+
+    assert outcome.status == expected_status
+    assert tuple(stage.stage for stage in outcome.stages) == STAGE_ORDER[:2]
+    assert recorded.exit_code == expected_exit_code
+    assert calls == list(STAGE_ORDER[:2])
+
+
+def test_only_stage_eddy_refuses_first_missing_upstream_before_action(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+
+    with pytest.raises(
+        StageStateError, match="upstream.*00_input_audit"
+    ):
+        run_pipeline(
+            subject_config,
+            "run",
+            selection=StageSelection(only_stage="05_eddy"),
+        )
+
+    assert "05_eddy" not in calls
+
+
+def test_only_stage_eddy_refuses_first_stale_upstream_before_action(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    _seed_fake_stages(subject_config, "INCLUDE", calls, "04_bet")
+    calls.clear()
+    (subject_config.subject_output / "02_gibbs" / "payload.txt").write_text(
+        "stale\n", encoding="utf-8"
+    )
+
+    with pytest.raises(StageStateError, match="02_gibbs"):
+        run_pipeline(
+            subject_config,
+            "run",
+            selection=StageSelection(only_stage="05_eddy"),
+        )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_status"),
+    [
+        ("EXCLUDE", "EXCLUDED"),
+        ("HOLD_FOR_REVIEW", "HOLD_FOR_REVIEW"),
+    ],
+)
+def test_only_stage_eddy_preserves_current_terminal_upstream_qc_outcome(
+    subject_config,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: str,
+    expected_status: str,
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, decision, calls)
+    _seed_fake_stages(
+        subject_config,
+        decision,
+        calls,
+        "00_pre_denoise_motion_qc",
+    )
+    calls.clear()
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(only_stage="05_eddy"),
+    )
+
+    assert outcome.status == expected_status
+    assert outcome.stages == ()
+    assert calls == []
+
+
+def test_only_stage_eddy_reports_exact_current_stage_as_skipped(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    _seed_fake_stages(subject_config, "INCLUDE", calls, "05_eddy")
+    calls.clear()
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(only_stage="05_eddy"),
+    )
+
+    assert outcome.status == "STAGE_COMPLETE"
+    assert outcome.stage_statuses == (("05_eddy", "SKIPPED"),)
+    assert calls == []
+
+
+def test_force_bounded_eddy_rerun_archives_target_and_downstream(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    _seed_fake_stages(subject_config, "INCLUDE", calls, "07_dki")
+    calls.clear()
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        force_stage="05_eddy",
+        selection=StageSelection(only_stage="05_eddy"),
+    )
+
+    archives = list(
+        (subject_config.subject_output / ".invalidated").iterdir()
+    )
+    assert outcome.status == "STAGE_COMPLETE"
+    assert outcome.stage_statuses == (("05_eddy", "COMPLETED"),)
+    assert calls == ["05_eddy"]
+    assert len(archives) == 1
+    for stage in ("05_eddy", "06_dti", "07_dki"):
+        assert (archives[0] / "final" / stage / "payload.txt").is_file()
+    assert not (subject_config.subject_output / "06_dti").exists()
+    assert not (subject_config.subject_output / "07_dki").exists()
+
+
+@pytest.mark.parametrize(
+    ("selection", "seed_through", "expected_discoveries"),
+    [
+        (StageSelection(stop_after="00_input_audit"), None, []),
+        (StageSelection(stop_after="04_bet"), None, ["fsl"]),
+        (StageSelection(only_stage="05_eddy"), "04_bet", ["fsl"]),
+        (
+            StageSelection(only_stage="08_noddi"),
+            "07_dki_direct",
+            ["fsl", "matlab"],
+        ),
+        (StageSelection(), None, ["fsl", "matlab"]),
+    ],
+)
+def test_only_stage_and_stop_after_discovery_contract(
+    subject_config,
+    monkeypatch: pytest.MonkeyPatch,
+    selection: StageSelection,
+    seed_through: str | None,
+    expected_discoveries: list[str],
+) -> None:
+    calls: list[str] = []
+    discoveries: list[str] = []
+    _install_fake_pipeline(
+        monkeypatch,
+        subject_config,
+        "INCLUDE",
+        calls,
+        discoveries,
+    )
+    if seed_through is not None:
+        _seed_fake_stages(
+            subject_config, "INCLUDE", calls, seed_through
+        )
+    calls.clear()
+    discoveries.clear()
+    if selection.only_stage == "05_eddy":
+        monkeypatch.setattr(
+            orchestrator,
+            "discover_matlab",
+            lambda config: pytest.fail(
+                "MATLAB discovery ran for an EDDY-only selection"
+            ),
+        )
+
+    run_pipeline(subject_config, "run", selection=selection)
+
+    assert discoveries == expected_discoveries
+
+
+def test_stop_after_bet_ignores_downstream_jhu_resource(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_jhu_resource",
+        lambda *args: pytest.fail("downstream JHU resource was validated"),
+    )
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="04_bet"),
+    )
+
+    assert outcome.status == "PARTIAL_COMPLETE"
+
+
+def test_stop_after_input_audit_ignores_downstream_plan_source(
+    subject_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    plan = _simple_plan(subject_config, "INCLUDE", calls)
+    plan[-1] = replace(
+        plan[-1], source_paths=(tmp_path / "missing-report-source.py",)
+    )
+    monkeypatch.setattr(
+        orchestrator, "_build_plan", lambda config, runtime: plan
+    )
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="00_input_audit"),
+    )
+
+    assert outcome.status == "PARTIAL_COMPLETE"
+    assert calls == ["00_input_audit"]
+
+
+def test_stop_after_eddy_records_resume_as_exact_current(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    discoveries: list[str] = []
+    _install_fake_pipeline(
+        monkeypatch,
+        subject_config,
+        "INCLUDE",
+        calls,
+        discoveries,
+    )
+
+    prefix = run_pipeline(
+        subject_config,
+        "run",
+        selection=StageSelection(stop_after="05_eddy"),
+    )
+    calls_after_prefix = tuple(calls)
+    resumed = run_pipeline(
+        subject_config, "run", selection=StageSelection()
+    )
+
+    assert prefix.status == "PARTIAL_COMPLETE"
+    assert tuple(stage.stage for stage in prefix.stages) == STAGE_ORDER[:7]
+    assert calls_after_prefix == STAGE_ORDER[:7]
+    assert dict(resumed.stage_statuses)["05_eddy"] == "SKIPPED"
+    assert calls == list(STAGE_ORDER)
 
 
 @pytest.mark.parametrize(
@@ -2460,6 +3132,55 @@ def test_fake_normal_run_honors_gate_and_completes_all_stages(
     assert calls == list(STAGE_ORDER[:expected_count])
 
 
+def test_fake_normal_run_records_stage_scoped_software_after_full_preflight(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", events)
+    fsl_installation = object()
+    matlab_installation = object()
+
+    def require_fsl(runtime: orchestrator._Runtime) -> object:
+        if runtime.fsl is None:
+            events.append("discover:fsl")
+            runtime.fsl = fsl_installation
+        return runtime.fsl
+
+    def require_matlab(runtime: orchestrator._Runtime) -> object:
+        if runtime.matlab is None:
+            events.append("discover:matlab")
+            runtime.matlab = matlab_installation
+        return runtime.matlab
+
+    monkeypatch.setattr(orchestrator._Runtime, "require_fsl", require_fsl)
+    monkeypatch.setattr(orchestrator._Runtime, "require_matlab", require_matlab)
+
+    outcome = run_pipeline(subject_config, "run")
+
+    assert outcome.status == "COMPLETE"
+    assert events[:5] == [
+        "00_input_audit",
+        "00_pre_denoise_motion_qc",
+        "discover:fsl",
+        "discover:matlab",
+        "01_denoise",
+    ]
+
+    def record_software(stage_name: str) -> dict[str, str]:
+        record = json.loads(
+            (
+                subject_config.subject_output
+                / stage_name
+                / ".stage_complete.json"
+            ).read_text(encoding="utf-8")
+        )
+        return record["software"]
+
+    assert record_software("00_input_audit") == BASE
+    assert record_software("05_eddy") == BASE | FSL
+    assert record_software("08_noddi") == BASE | MATLAB
+
+
 def test_fake_normal_run_exact_current_skip_stale_partial_and_force_contracts(
     subject_config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2471,15 +3192,15 @@ def test_fake_normal_run_exact_current_skip_stale_partial_and_force_contracts(
 
     second = run_pipeline(subject_config, "run")
     assert calls == []
-    assert all(status == "skipped" for _, status in second.stage_statuses)
+    assert all(status == "SKIPPED" for _, status in second.stage_statuses)
 
     chosen = STAGE_ORDER.index("05_eddy")
     forced = run_pipeline(subject_config, "run", force_stage="05_eddy")
     assert all(
-        status == "skipped" for _, status in forced.stage_statuses[:chosen]
+        status == "SKIPPED" for _, status in forced.stage_statuses[:chosen]
     )
     assert all(
-        status == "completed" for _, status in forced.stage_statuses[chosen:]
+        status == "COMPLETED" for _, status in forced.stage_statuses[chosen:]
     )
     assert calls == list(STAGE_ORDER[chosen:])
 

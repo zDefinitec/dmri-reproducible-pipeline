@@ -24,6 +24,7 @@ import nibabel as nib
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 
+from . import eddy_timing
 from .qc import (
     FIGURE_IDS,
     FIGURE_FILENAMES,
@@ -124,6 +125,7 @@ class ReportContext:
     eddy_outlier_map: Path
     eddy_outlier_report: Path
     eddy_quad_json: Path
+    eddy_timing_json: Path
     noddi_error_codes: Path
     summary_json: Path
     global_csv: Path
@@ -147,6 +149,7 @@ class ReportContext:
             "eddy_outlier_map",
             "eddy_outlier_report",
             "eddy_quad_json",
+            "eddy_timing_json",
             "noddi_error_codes",
             "summary_json",
             "global_csv",
@@ -307,6 +310,7 @@ def _validate_path_assignment(context: ReportContext) -> None:
         context.eddy_outlier_map,
         context.eddy_outlier_report,
         context.eddy_quad_json,
+        context.eddy_timing_json,
         context.noddi_error_codes,
         context.summary_json,
         context.global_csv,
@@ -349,6 +353,7 @@ def _context_inputs(context: ReportContext) -> list[Path]:
         context.eddy_outlier_map,
         context.eddy_outlier_report,
         context.eddy_quad_json,
+        context.eddy_timing_json,
         context.noddi_error_codes,
         context.summary_json,
         context.global_csv,
@@ -818,6 +823,12 @@ def _eddy_facts(
     quad = _sanitize_eddy_quad(
         _read_json(snapshots.path(context.eddy_quad_json), "EDDY QUAD")
     )
+    try:
+        timing = eddy_timing.read_eddy_timing(
+            snapshots.path(context.eddy_timing_json)
+        )
+    except eddy_timing.EddyTimingError as error:
+        raise ReportError(str(error)) from error
     return OrderedDict(
         (
             (
@@ -837,6 +848,19 @@ def _eddy_facts(
             ("affected_volume_count", affected),
             ("maximum_slices_in_one_volume", int(np.max(outlier_counts))),
             ("eddy_quad_selected_numeric_metrics", quad),
+            (
+                "runtime_seconds",
+                OrderedDict(
+                    (
+                        (
+                            "eddy_command_including_cnr_and_residuals",
+                            timing.eddy_command_seconds,
+                        ),
+                        ("eddy_quad", timing.eddy_quad_seconds),
+                        ("stage_action_total", timing.stage_action_seconds),
+                    )
+                ),
+            ),
         )
     )
 
@@ -1165,6 +1189,11 @@ def _build_markdown(context: ReportContext, data: _ReportData) -> str:
         summary_mask,
     ):
         assert isinstance(value, Mapping)
+    runtime = eddy["runtime_seconds"]
+    assert isinstance(runtime, Mapping)
+    command_runtime = float(
+        runtime["eddy_command_including_cnr_and_residuals"]
+    )
 
     lines = [
         f"# {subject} diffusion MRI analysis report",
@@ -1330,57 +1359,72 @@ def _build_markdown(context: ReportContext, data: _ReportData) -> str:
     )
     _append_markdown_table(
         lines,
-        ("Metric", "Value", "Unit"),
+        ("Metric", "Unit", "Value"),
         (
             (
                 "Maximum absolute translation",
-                f"{float(eddy['translation_max_abs_mm']):.6g}",
                 "mm",
+                f"{float(eddy['translation_max_abs_mm']):.6g}",
             ),
             (
                 "Maximum absolute rotation",
-                f"{float(eddy['rotation_max_abs_degrees']):.6g}",
                 "degrees",
+                f"{float(eddy['rotation_max_abs_degrees']):.6g}",
             ),
             (
                 "Absolute RMS mean",
-                f"{float(eddy['absolute_rms_mean_mm']):.6g}",
                 "mm",
+                f"{float(eddy['absolute_rms_mean_mm']):.6g}",
             ),
             (
                 "Absolute RMS maximum",
-                f"{float(eddy['absolute_rms_max_mm']):.6g}",
                 "mm",
+                f"{float(eddy['absolute_rms_max_mm']):.6g}",
             ),
             (
                 "Relative RMS mean",
-                f"{float(eddy['relative_rms_mean_mm']):.6g}",
                 "mm",
+                f"{float(eddy['relative_rms_mean_mm']):.6g}",
             ),
             (
                 "Relative RMS maximum",
-                f"{float(eddy['relative_rms_max_mm']):.6g}",
                 "mm",
+                f"{float(eddy['relative_rms_max_mm']):.6g}",
             ),
             (
                 "Reported outlier-slice count",
-                eddy["reported_outlier_slice_count"],
                 "slices",
+                eddy["reported_outlier_slice_count"],
             ),
             (
                 "Observed outlier-slice count",
-                eddy["observed_outlier_slice_count"],
                 "slices",
+                eddy["observed_outlier_slice_count"],
             ),
             (
                 "Affected volume count",
-                eddy["affected_volume_count"],
                 "volumes",
+                eddy["affected_volume_count"],
             ),
             (
                 "Maximum slices in one volume",
-                eddy["maximum_slices_in_one_volume"],
                 "slices",
+                eddy["maximum_slices_in_one_volume"],
+            ),
+            (
+                "EDDY command (includes CNR maps and residuals)",
+                "seconds",
+                f"{command_runtime:.12g}",
+            ),
+            (
+                "EDDY QUAD",
+                "seconds",
+                f"{float(runtime['eddy_quad']):.12g}",
+            ),
+            (
+                "05_eddy stage action total",
+                "seconds",
+                f"{float(runtime['stage_action_total']):.12g}",
             ),
         ),
     )
@@ -1788,6 +1832,9 @@ def _pdf_page4_summary(payload: Mapping[str, object]) -> tuple[str, str, str]:
     topup = payload["topup"]
     bet = payload["bet"]
     eddy = payload["eddy"]
+    runtime = eddy["runtime_seconds"]
+    if not isinstance(runtime, Mapping):
+        raise ReportError("EDDY runtime summary is not a mapping")
     return (
         "TOPUP FIELD QC\n"
         "Units: Hz\n"
@@ -1815,6 +1862,11 @@ def _pdf_page4_summary(payload: Mapping[str, object]) -> tuple[str, str, str]:
         f"Affected volumes: {eddy['affected_volume_count']}\n"
         "Max slices in one volume: "
         f"{eddy['maximum_slices_in_one_volume']}\n"
+        "EDDY command (includes CNR maps and residuals): "
+        f"{runtime['eddy_command_including_cnr_and_residuals']:.6g} seconds\n"
+        f"EDDY QUAD: {runtime['eddy_quad']:.6g} seconds\n"
+        "05_eddy stage action total: "
+        f"{runtime['stage_action_total']:.6g} seconds\n"
         f"{_format_quad(eddy['eddy_quad_selected_numeric_metrics'])}",
     )
 
