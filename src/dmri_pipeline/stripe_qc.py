@@ -425,7 +425,7 @@ def _write_metrics(path: Path, bvals: np.ndarray, metrics: StripeMetrics) -> Non
                     f"{float(bvals[index]):.8g}",
                     int(metrics.shells[index]),
                     f"{float(metrics.a_si[index]):.12g}",
-                    f"{float(metrics.c_si[index]):.9g}",
+                    f"{float(metrics.c_si[index]):.17g}",
                     classify_csi(float(metrics.c_si[index])),
                     int(metrics.peak_sagittal[index]),
                     int(metrics.peak_sagittal[index]) + 1,
