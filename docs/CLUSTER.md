@@ -76,7 +76,9 @@ CLUSTER_RUN_ROOT/chain-*/logs/noddi.out and noddi.err
 The same chain directory contains immutable launch inputs, timestamps,
 per-group status and exit-status records, submission arguments, and scheduler
 submission stdout/stderr under `submissions/`. Inspect the `status` file first
-when a chain stops.
+when a chain stops. Before each worker starts, it re-reads the subject
+configuration and requires its subject ID, resolved subject output, and NODDI
+worker count to match those immutable launch records exactly.
 
 Tune future requests from completed PBS `.STATS` files: compare elapsed time,
 peak memory, and allocated CPUs for each group, then adjust only the matching
@@ -110,3 +112,21 @@ to retry only scheduler submission. Do not delete outputs, chain directories,
 or stage evidence as a recovery step. The pipeline's existing resumable stage
 state determines what must be recomputed; use `--start-at` only after checking
 the recorded chain state and prerequisites.
+
+### Stale successor-submission locks
+
+Successor submission is fail-closed. A process killed after scheduler
+acceptance can leave `.eddy.submission.lock` or `.noddi.submission.lock` in the
+chain directory. Its `owner` record contains the chain ID, source and successor
+groups, scheduler job name, wrapper PID, and acquisition time. A dead PID alone
+does not prove that the scheduler rejected the job.
+
+Never blindly delete or supersede one of these locks. First inspect its `owner`
+record, the matching `*.submitted` marker, `status`, and every
+`submissions/GROUP.*` record. Then reconcile the recorded job name
+`dmri_GROUP_CHAIN_ID` against scheduler history and the live queue. If that job
+is queued, running, or completed, do not resubmit it. Only after confirming
+that no lock owner is live and no matching job was accepted may an operator
+remove the exact stale `owner` file and its now-empty lock directory. If
+scheduler acceptance remains uncertain, leave the chain locked and do not
+launch a replacement `--start-at` chain until reconciliation is complete.

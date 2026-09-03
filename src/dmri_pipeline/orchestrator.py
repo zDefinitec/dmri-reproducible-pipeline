@@ -399,7 +399,7 @@ def run_pipeline(
     with _SubjectLock(config.subject_output):
         if stage_group is not None:
             return _run_stage_group(
-                config, runtime, plan, stage_group, force_stage
+                config, audit, runtime, plan, stage_group, force_stage
             )
         if force_stage is not None:
             gate_runner.invalidate_from(STAGE_ORDER, force_stage)
@@ -461,6 +461,7 @@ def run_pipeline(
 
 def _run_stage_group(
     config: PipelineConfig,
+    audit: InputAudit,
     runtime: _Runtime,
     initial_plan: Sequence[StageSpec],
     stage_group: str,
@@ -500,10 +501,14 @@ def _run_stage_group(
 
     if force_stage is not None:
         gate_runner.invalidate_from(STAGE_ORDER, force_stage)
+    elif stage_group == "topup" and _safe_manual_review_transition(
+        config, gate_runner, audit
+    ):
+        gate_runner.invalidate_from(STAGE_ORDER, STAGE_ORDER[0])
 
     for index in range(group_start):
-        spec = plan[index]
         runner = gate_runner if index < 2 else scientific_runner()
+        spec = plan[index]
         if not runner.is_current(spec):
             raise StageStateError(
                 f"upstream stage {spec.name!r} must be current before "
@@ -565,9 +570,10 @@ def _run_stage_group(
     stopped = execute_group_specs(gate_runner, gate_specs)
     if stopped is not None:
         return stopped
-    scientific_specs = plan[max(group_start, 2) : group_end]
-    if scientific_specs:
-        stopped = execute_group_specs(scientific_runner(), scientific_specs)
+    if group_end > 2:
+        runner = scientific_runner()
+        scientific_specs = plan[max(group_start, 2) : group_end]
+        stopped = execute_group_specs(runner, scientific_specs)
         if stopped is not None:
             return stopped
     return PipelineOutcome(
@@ -2691,6 +2697,12 @@ def _dry_run(
     selected_names = (
         frozenset(STAGE_GROUPS[stage_group]) if stage_group is not None else None
     )
+    group_start = (
+        STAGE_ORDER.index(STAGE_GROUPS[stage_group][0])
+        if stage_group is not None
+        else 0
+    )
+    prerequisite_blocker: tuple[str, str] | None = None
     inspect_end = (
         STAGE_ORDER.index(STAGE_GROUPS[stage_group][-1]) + 1
         if stage_group is not None
@@ -2733,6 +2745,23 @@ def _dry_run(
             status = "runnable"
         else:
             status = "blocked"
+        if (
+            stage_group is not None
+            and index < group_start
+            and status != "current/skipped"
+        ):
+            if prerequisite_blocker is None:
+                reason = (
+                    "stale"
+                    if lexical_final.exists()
+                    or lexical_final.is_symlink()
+                    or lexical_work.exists()
+                    or lexical_work.is_symlink()
+                    else "missing"
+                )
+                prerequisite_blocker = (spec.name, reason)
+                print(f"group prerequisite {spec.name}: {reason}")
+            upstream_runnable = False
         if selected_names is None or spec.name in selected_names:
             print(f"{spec.name}: {status}")
             outcomes.append(

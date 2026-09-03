@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -31,15 +32,22 @@ def cluster_package(tmp_path: Path) -> dict[str, Path | dict[str, str]]:
     cluster_source = REPOSITORY_ROOT / "scripts" / "cluster"
     assert cluster_source.is_dir(), "cluster wrappers have not been implemented"
     shutil.copytree(cluster_source, package / "scripts" / "cluster")
+    shutil.copy2(
+        REPOSITORY_ROOT / "scripts" / "rocky_environment.sh",
+        package / "scripts" / "rocky_environment.sh",
+    )
 
     fake_pipeline = _write_executable(
         package / "run_pipeline.sh",
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "if [[ ${1-} == --print-cluster-context ]]; then\n"
+        "  printf '%s\\0' \"$@\" >> \"${CONTEXT_CAPTURE}\"\n"
+        "  printf '%s\\0' \"${DMRI_SOFTWARE_CONFIG-}\" >> \"${CONTEXT_SOFTWARE_CAPTURE}\"\n"
         "  printf '%s\\n' \"${FAKE_CONTEXT_JSON}\"\n"
         "  exit \"${FAKE_CONTEXT_STATUS:-0}\"\n"
         "fi\n"
+        "printf '%s\\0' \"${DMRI_SOFTWARE_CONFIG-}\" >> \"${PIPELINE_SOFTWARE_CAPTURE}\"\n"
         "printf '%s\\0' \"$@\" >> \"${PIPELINE_CAPTURE}\"\n"
         "exit \"${FAKE_PIPELINE_STATUS:-0}\"\n",
     )
@@ -47,6 +55,23 @@ def cluster_package(tmp_path: Path) -> dict[str, Path | dict[str, str]]:
 
     fake_bin = tmp_path / "fake bin"
     fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "stat",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "if [[ ${1-} == -c && ${2-} == '%u' "
+        "&& -n ${FAKE_STAT_OWNER_PATH-} && ${3-} == \"${FAKE_STAT_OWNER_PATH}\" ]]; then\n"
+        "  printf '%s\\n' \"${FAKE_STAT_OWNER_UID}\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ $(/usr/bin/uname -s) == Darwin && ${1-} == -c ]]; then\n"
+        "  case ${2-} in\n"
+        "    '%u') exec /usr/bin/stat -f '%u' \"$3\" ;;\n"
+        "    '%a') exec /usr/bin/stat -f '%OLp' \"$3\" ;;\n"
+        "  esac\n"
+        "fi\n"
+        "exec /usr/bin/stat \"$@\"\n",
+    )
     fake_conda = _write_executable(
         fake_bin / "conda",
         "#!/usr/bin/env bash\n"
@@ -68,14 +93,36 @@ def cluster_package(tmp_path: Path) -> dict[str, Path | dict[str, str]]:
         "printf '%s\\0' \"$@\" >> \"${CBIG_CAPTURE}\"\n"
         "printf 'fake scheduler stdout\\n'\n"
         "printf 'fake scheduler stderr\\n' >&2\n"
+        "if [[ -n ${CBIG_INJECT_DIRECTORY-} ]]; then\n"
+        "  rm -f -- \"${CBIG_INJECT_DIRECTORY}\"\n"
+        "  mkdir -- \"${CBIG_INJECT_DIRECTORY}\"\n"
+        "fi\n"
+        "if [[ -n ${CBIG_BLOCK_READY-} ]]; then\n"
+        "  printf 'entered\\n' >> \"${CBIG_BLOCK_READY}\"\n"
+        "  while [[ ! -f ${CBIG_BLOCK_RELEASE} ]]; do /bin/sleep 0.02; done\n"
+        "fi\n"
+        "if [[ ${CBIG_EXECUTE_COMMAND:-0} == 1 ]]; then\n"
+        "  command_to_run=\n"
+        "  while (( $# )); do\n"
+        "    if [[ $1 == -cmd ]]; then command_to_run=$2; break; fi\n"
+        "    shift\n"
+        "  done\n"
+        "  if /bin/bash -c \"${command_to_run}\"; then command_status=0; else command_status=$?; fi\n"
+        "  printf '%s\\n' \"${command_status}\" >> \"${CBIG_EXECUTION_CAPTURE}\"\n"
+        "fi\n"
         "exit \"${CBIG_EXIT:-0}\"\n",
     )
     software_config = tmp_path / "dmri software.sh"
     software_config.write_text(
         "#!/usr/bin/env bash\n"
-        + _shell_assignment("CONDA_EXE", str(fake_conda)),
+        + _shell_assignment("CONDA_EXE", str(fake_conda))
+        + _shell_assignment("FSLDIR", "/configured/fsl")
+        + _shell_assignment("MATLAB_EXECUTABLE", "/configured/matlab")
+        + _shell_assignment("DMRI_EXPECTED_FSL_VERSION", "6.0.7.18")
+        + _shell_assignment("DMRI_EXPECTED_MATLAB_VERSION", "25.1"),
         encoding="utf-8",
     )
+    software_config.chmod(0o600)
     subject_config = tmp_path / "subject config.yaml"
     subject_config.write_text("analysis:\n  noddi_workers: 3\n", encoding="utf-8")
     run_root = tmp_path / "cluster runs"
@@ -101,6 +148,8 @@ def cluster_package(tmp_path: Path) -> dict[str, Path | dict[str, str]]:
         "cluster_config": cluster_config,
         "software_config": software_config,
         "submitter": fake_submitter,
+        "conda": fake_conda,
+        "fake_bin": fake_bin,
         "run_root": run_root,
         "values": values,
     }
@@ -112,6 +161,7 @@ def _write_cluster_config(path: Path, values: dict[str, str]) -> None:
         + "".join(_shell_assignment(key, value) for key, value in values.items()),
         encoding="utf-8",
     )
+    path.chmod(0o600)
 
 
 def _environment(tmp_path: Path, *, workers: int | str = 3) -> dict[str, str]:
@@ -121,6 +171,10 @@ def _environment(tmp_path: Path, *, workers: int | str = 3) -> dict[str, str]:
             "CBIG_CAPTURE": str(tmp_path / "cbig.argv"),
             "CONDA_CAPTURE": str(tmp_path / "conda.argv"),
             "PIPELINE_CAPTURE": str(tmp_path / "pipeline.argv"),
+            "PIPELINE_SOFTWARE_CAPTURE": str(tmp_path / "pipeline.software"),
+            "CONTEXT_CAPTURE": str(tmp_path / "context.argv"),
+            "CONTEXT_SOFTWARE_CAPTURE": str(tmp_path / "context.software"),
+            "PATH": f"{tmp_path / 'fake bin'}:{environment['PATH']}",
             "FAKE_CONTEXT_JSON": json.dumps(
                 {
                     "noddi_workers": workers,
@@ -364,6 +418,212 @@ def test_launcher_rejects_missing_cluster_config_key(
     assert "eddy_mem" in result.stderr.lower()
     assert "required" in result.stderr.lower()
     assert not (tmp_path / "cbig.argv").exists()
+
+
+@pytest.mark.parametrize("config_kind", ["cluster_config", "software_config"])
+def test_launcher_rejects_group_or_world_writable_private_config(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    config_kind: str,
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    private_config = cluster_package[config_kind]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(private_config, Path)
+    private_config.chmod(0o666)
+
+    result = _run_launcher(
+        cluster_package,
+        _environment(tmp_path),
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert result.returncode == 30
+    assert "group- or world-writable" in result.stderr
+    assert not (tmp_path / "cbig.argv").exists()
+
+
+@pytest.mark.parametrize("config_kind", ["cluster_config", "software_config"])
+def test_launcher_rejects_symlinked_private_config(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    config_kind: str,
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    private_config = cluster_package[config_kind]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(private_config, Path)
+    real_config = private_config.with_name(private_config.name + ".real")
+    private_config.rename(real_config)
+    private_config.symlink_to(real_config)
+
+    result = _run_launcher(
+        cluster_package,
+        _environment(tmp_path),
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert result.returncode == 30
+    assert "symlink" in result.stderr.lower()
+    assert not (tmp_path / "cbig.argv").exists()
+
+
+@pytest.mark.parametrize("config_kind", ["cluster_config", "software_config"])
+def test_launcher_rejects_private_config_not_owned_by_current_user(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    config_kind: str,
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    private_config = cluster_package[config_kind]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(private_config, Path)
+    environment = _environment(tmp_path)
+    environment["FAKE_STAT_OWNER_PATH"] = str(private_config)
+    environment["FAKE_STAT_OWNER_UID"] = str(os.getuid() + 1)
+
+    result = _run_launcher(
+        cluster_package, environment, str(subject), str(cluster_config)
+    )
+
+    assert result.returncode == 30
+    assert "owned by the current user" in result.stderr
+    assert not (tmp_path / "cbig.argv").exists()
+
+
+@pytest.mark.parametrize("config_kind", ["cluster_config", "software_config"])
+def test_private_config_exit_cannot_terminate_launcher_successfully(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    config_kind: str,
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    private_config = cluster_package[config_kind]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(private_config, Path)
+    private_config.write_text("printf 'private diagnostic\\n'\nexit 0\n", encoding="utf-8")
+
+    result = _run_launcher(
+        cluster_package,
+        _environment(tmp_path),
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert result.returncode == 30
+    assert "private diagnostic" not in result.stdout
+    assert not (tmp_path / "cbig.argv").exists()
+
+
+@pytest.mark.parametrize("config_kind", ["cluster_config", "software_config"])
+def test_private_config_cannot_resolve_required_value_from_parent_environment(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    config_kind: str,
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    private_config = cluster_package[config_kind]
+    submitter = cluster_package["submitter"]
+    conda = cluster_package["conda"]
+    values = cluster_package["values"]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(private_config, Path)
+    assert isinstance(submitter, Path)
+    assert isinstance(conda, Path)
+    assert isinstance(values, dict)
+    if config_kind == "cluster_config":
+        private_config.write_text(
+            "CBIG_PBSUBMIT=\"${PARENT_ONLY}\"\n"
+            + "".join(
+                _shell_assignment(key, value)
+                for key, value in values.items()
+                if key != "CBIG_PBSUBMIT"
+            ),
+            encoding="utf-8",
+        )
+        inherited_value = str(submitter)
+    else:
+        private_config.write_text(
+            "CONDA_EXE=\"${PARENT_ONLY}\"\n"
+            + _shell_assignment("FSLDIR", "/configured/fsl")
+            + _shell_assignment("MATLAB_EXECUTABLE", "/configured/matlab")
+            + _shell_assignment("DMRI_EXPECTED_FSL_VERSION", "6.0.7.18")
+            + _shell_assignment("DMRI_EXPECTED_MATLAB_VERSION", "25.1"),
+            encoding="utf-8",
+        )
+        inherited_value = str(conda)
+    environment = _environment(tmp_path)
+    environment["PARENT_ONLY"] = inherited_value
+
+    result = _run_launcher(
+        cluster_package, environment, str(subject), str(cluster_config)
+    )
+
+    assert result.returncode == 30
+    assert not (tmp_path / "cbig.argv").exists()
+
+
+@pytest.mark.parametrize("config_kind", ["cluster_config", "software_config"])
+def test_private_config_stdout_remains_diagnostic_and_does_not_corrupt_import(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    config_kind: str,
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    private_config = cluster_package[config_kind]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(private_config, Path)
+    original = private_config.read_text(encoding="utf-8")
+    private_config.write_text(
+        "printf 'private diagnostic\\n'\n" + original, encoding="utf-8"
+    )
+
+    result = _run_launcher(
+        cluster_package,
+        _environment(tmp_path),
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "private diagnostic" not in result.stdout
+    assert "private diagnostic" in result.stderr
+    assert (tmp_path / "cbig.argv").is_file()
+
+
+def test_cluster_config_imports_only_fixed_keys_into_launcher(
+    cluster_package: dict[str, Path | dict[str, str]], tmp_path: Path
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    with cluster_config.open("a", encoding="utf-8") as handle:
+        handle.write("export CBIG_EXIT=77\n")
+
+    result = _run_launcher(
+        cluster_package,
+        _environment(tmp_path),
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "cbig.argv").is_file()
 
 
 @pytest.mark.parametrize("path_key", ["CBIG_PBSUBMIT", "DMRI_SOFTWARE_CONFIG"])
@@ -646,6 +906,148 @@ def test_worker_duplicate_success_does_not_resubmit_successor(
     assert (chain_dir / f"{successor}.submitted").is_file()
 
 
+def test_concurrent_successful_workers_contend_on_one_real_successor_lock(
+    cluster_package: dict[str, Path | dict[str, str]], tmp_path: Path
+) -> None:
+    environment = _environment(tmp_path)
+    environment["FAKE_PIPELINE_STATUS"] = "0"
+    chain_dir = _launch_chain(cluster_package, tmp_path, environment, "topup")
+    ready = tmp_path / "submitter.ready"
+    release = tmp_path / "submitter.release"
+    environment["CBIG_BLOCK_READY"] = str(ready)
+    environment["CBIG_BLOCK_RELEASE"] = str(release)
+    package = cluster_package["package"]
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    assert isinstance(package, Path)
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    command = [
+        str(package / "scripts" / "cluster" / "run_topup_subject.sh"),
+        str(subject),
+        str(cluster_config),
+        chain_dir.name,
+    ]
+    first = subprocess.Popen(
+        command,
+        cwd=package,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 10.0
+    while not ready.exists() and first.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if not ready.exists():
+        first_stdout, first_stderr = first.communicate(timeout=5)
+        pytest.fail(
+            f"first worker never entered blocking submitter: "
+            f"rc={first.returncode} stdout={first_stdout!r} stderr={first_stderr!r}"
+        )
+
+    contender = subprocess.run(
+        command,
+        cwd=package,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert contender.returncode == 30
+    assert "successor submission is locked" in contender.stderr
+    owner = chain_dir / ".eddy.submission.lock" / "owner"
+    owner_text = owner.read_text(encoding="utf-8")
+    assert f"chain_id={chain_dir.name}\n" in owner_text
+    assert "source_group=topup\n" in owner_text
+    assert "successor=eddy\n" in owner_text
+    assert f"job_name=dmri_eddy_{chain_dir.name}\n" in owner_text
+    assert "pid=" in owner_text
+    assert "acquired_utc=" in owner_text
+    release.write_text("release\n", encoding="utf-8")
+    first_stdout, first_stderr = first.communicate(timeout=10)
+
+    assert first.returncode == 0, (first_stdout, first_stderr)
+    assert _nul_arguments(tmp_path / "cbig.argv").count("-cmd") == 1
+    assert (chain_dir / "eddy.submitted").is_file()
+    assert not (chain_dir / ".eddy.submission.lock").exists()
+
+
+@pytest.mark.parametrize(
+    ("relative_target", "target_kind"),
+    [
+        (Path("submissions/eddy.argv"), "symlink"),
+        (Path("submissions/eddy.exit_status"), "fifo"),
+        (Path("eddy.submitted"), "directory"),
+    ],
+)
+def test_successor_submission_rejects_nonregular_record_targets_before_scheduler(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    relative_target: Path,
+    target_kind: str,
+) -> None:
+    environment = _environment(tmp_path)
+    environment["FAKE_PIPELINE_STATUS"] = "0"
+    chain_dir = _launch_chain(cluster_package, tmp_path, environment, "topup")
+    target = chain_dir / relative_target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside record"
+    outside.write_text("preserve\n", encoding="utf-8")
+    if target_kind == "symlink":
+        target.symlink_to(outside)
+    elif target_kind == "fifo":
+        os.mkfifo(target)
+    else:
+        target.mkdir()
+    result = _run_worker(cluster_package, environment, "topup", chain_dir)
+
+    assert result.returncode == 30
+    assert "record" in result.stderr.lower() or "symbolic link" in result.stderr.lower()
+    assert outside.read_text(encoding="utf-8") == "preserve\n"
+    assert not (tmp_path / "cbig.argv").exists()
+
+
+@pytest.mark.parametrize(
+    ("injected_target", "marker_must_exist", "lock_must_remain"),
+    [
+        (Path("submissions/eddy.exit_status"), True, False),
+        (Path("eddy.submitted"), False, True),
+        (Path("status"), True, False),
+    ],
+)
+def test_successor_submission_propagates_record_failure_after_scheduler_acceptance(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    injected_target: Path,
+    marker_must_exist: bool,
+    lock_must_remain: bool,
+) -> None:
+    environment = _environment(tmp_path)
+    environment["FAKE_PIPELINE_STATUS"] = "0"
+    chain_dir = _launch_chain(cluster_package, tmp_path, environment, "topup")
+    environment["CBIG_INJECT_DIRECTORY"] = str(chain_dir / injected_target)
+
+    result = _run_worker(cluster_package, environment, "topup", chain_dir)
+
+    assert result.returncode == 30
+    assert "record" in result.stderr.lower()
+    assert (tmp_path / "cbig.argv").is_file()
+    assert (chain_dir / "eddy.submitted").is_file() is marker_must_exist
+    lock = chain_dir / ".eddy.submission.lock"
+    assert lock.is_dir() is lock_must_remain
+    if lock_must_remain:
+        assert (lock / "owner").is_file()
+        first_submission = (tmp_path / "cbig.argv").read_bytes()
+        (chain_dir / injected_target).rmdir()
+        environment.pop("CBIG_INJECT_DIRECTORY")
+        retry = _run_worker(cluster_package, environment, "topup", chain_dir)
+        assert retry.returncode == 30
+        assert "successor submission is locked" in retry.stderr
+        assert (tmp_path / "cbig.argv").read_bytes() == first_submission
+
+
 @pytest.mark.parametrize("replaced_directory", ["chain", "logs", "submissions"])
 def test_worker_rejects_chain_directories_resolving_outside_run_root(
     cluster_package: dict[str, Path | dict[str, str]],
@@ -707,3 +1109,134 @@ def test_worker_rejects_mutated_noddi_cpu_request_below_immutable_worker_count(
     assert not (tmp_path / "cbig.argv").exists()
     assert conda_capture.read_bytes() == context_calls_before_worker
     assert not (chain_dir / f"{group}.started_at").exists()
+
+
+@pytest.mark.parametrize("group", ["topup", "eddy", "noddi"])
+@pytest.mark.parametrize(
+    ("field", "mutated_value"),
+    [
+        ("subject_id", "MUTATED SUBJECT"),
+        ("subject_output", "/mutated/output"),
+        ("noddi_workers", 7),
+    ],
+)
+def test_worker_revalidates_live_context_against_immutable_chain_identity(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    group: str,
+    field: str,
+    mutated_value: str | int,
+) -> None:
+    environment = _environment(tmp_path, workers=3)
+    chain_dir = _launch_chain(cluster_package, tmp_path, environment, group)
+    mutated_context: dict[str, str | int] = {
+        "noddi_workers": 3,
+        "subject_id": "SUBJECT 001",
+        "subject_output": "/science/output/SUBJECT 001",
+    }
+    mutated_context[field] = mutated_value
+    environment["FAKE_CONTEXT_JSON"] = json.dumps(mutated_context, sort_keys=True)
+
+    result = _run_worker(cluster_package, environment, group, chain_dir)
+
+    assert result.returncode == 30
+    assert field in result.stderr
+    assert "immutable chain" in result.stderr.lower()
+    assert not (tmp_path / "pipeline.argv").exists()
+    assert not (tmp_path / "cbig.argv").exists()
+    assert not (chain_dir / f"{group}.started_at").exists()
+
+
+@pytest.mark.parametrize(
+    ("advanced_status", "downstream_groups", "downstream_failure"),
+    [
+        ("eddy_failed", ("eddy",), 50),
+        ("noddi_submitted", ("eddy",), None),
+        ("complete", ("eddy", "noddi"), None),
+    ],
+)
+def test_reentered_topup_worker_preserves_later_or_terminal_global_status(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    advanced_status: str,
+    downstream_groups: tuple[str, ...],
+    downstream_failure: int | None,
+) -> None:
+    environment = _environment(tmp_path)
+    environment["FAKE_PIPELINE_STATUS"] = "0"
+    chain_dir = _launch_chain(cluster_package, tmp_path, environment, "topup")
+    topup = _run_worker(cluster_package, environment, "topup", chain_dir)
+    assert topup.returncode == 0, topup.stderr
+    for downstream_group in downstream_groups:
+        environment["FAKE_PIPELINE_STATUS"] = str(downstream_failure or 0)
+        downstream = _run_worker(
+            cluster_package, environment, downstream_group, chain_dir
+        )
+        assert downstream.returncode == (downstream_failure or 0), downstream.stderr
+    assert (chain_dir / "status").read_text(encoding="utf-8") == advanced_status + "\n"
+    environment["FAKE_PIPELINE_STATUS"] = "0"
+
+    retried = _run_worker(cluster_package, environment, "topup", chain_dir)
+
+    assert retried.returncode == 0, retried.stderr
+    assert (chain_dir / "status").read_text(encoding="utf-8") == advanced_status + "\n"
+
+
+def test_context_preflight_receives_exact_subject_argv_and_software_environment(
+    cluster_package: dict[str, Path | dict[str, str]], tmp_path: Path
+) -> None:
+    environment = _environment(tmp_path)
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    software_config = cluster_package["software_config"]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(software_config, Path)
+
+    result = _run_launcher(
+        cluster_package, environment, str(subject), str(cluster_config)
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _nul_arguments(tmp_path / "context.argv") == [
+        "--print-cluster-context",
+        str(subject),
+    ]
+    assert _nul_arguments(tmp_path / "context.software") == [str(software_config)]
+
+
+def test_generated_scheduler_command_executes_difficult_valid_paths_exactly(
+    cluster_package: dict[str, Path | dict[str, str]], tmp_path: Path
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    software_config = cluster_package["software_config"]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(software_config, Path)
+    difficult_subject = tmp_path / "subject $literal;quote' config.yaml"
+    difficult_cluster = tmp_path / "cluster $literal;quote' config.sh"
+    subject.rename(difficult_subject)
+    cluster_config.rename(difficult_cluster)
+    cluster_package["subject"] = difficult_subject
+    cluster_package["cluster_config"] = difficult_cluster
+    environment = _environment(tmp_path)
+    environment["FAKE_PIPELINE_STATUS"] = "21"
+    environment["CBIG_EXECUTE_COMMAND"] = "1"
+    environment["CBIG_EXECUTION_CAPTURE"] = str(tmp_path / "executed.status")
+
+    result = _run_launcher(
+        cluster_package,
+        environment,
+        str(difficult_subject),
+        str(difficult_cluster),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "executed.status").read_text(encoding="utf-8") == "21\n"
+    assert _nul_arguments(tmp_path / "pipeline.argv") == [
+        "--stage-group",
+        "topup",
+        str(difficult_subject),
+    ]
+    assert _nul_arguments(tmp_path / "pipeline.software") == [str(software_config)]

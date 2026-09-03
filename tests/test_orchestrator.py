@@ -2376,6 +2376,43 @@ def test_real_public_plan_hold_stops_before_runtime_discovery(
     ) == 2
 
 
+def test_grouped_topup_resumes_genuine_hold_after_documented_review(
+    subject_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, action_calls, discoveries = _install_real_plan_test_boundaries(
+        monkeypatch,
+        subject_config,
+        tmp_path,
+        np.asarray([1.20, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+    )
+
+    held = run_pipeline(subject_config, "run", stage_group="topup")
+    reviewed = replace(
+        subject_config,
+        analysis=replace(subject_config.analysis, ambiguous_qc_reviewed=True),
+    )
+    resumed = run_pipeline(reviewed, "run", stage_group="topup")
+    decision = json.loads(
+        (
+            reviewed.subject_output
+            / "00_pre_denoise_motion_qc"
+            / "stripe_decision.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert held.status == "HOLD_FOR_REVIEW"
+    assert resumed.status == "GROUP_COMPLETE"
+    assert resumed.stage_statuses == tuple(
+        (name, "completed") for name in STAGE_GROUPS["topup"]
+    )
+    assert decision["decision"] == "INCLUDE_AFTER_REVIEW"
+    assert decision["ambiguous_reviewed"] is True
+    assert action_calls == ["denoise_leaf", "gibbs_leaf", "fsl:topup"]
+    assert discoveries == ["fsl", "matlab"]
+
+
 def _simple_plan(
     subject_config,
     decision: str,
@@ -2603,6 +2640,92 @@ def test_group_force_stage_outside_group_is_rejected_before_invalidation(
     assert (subject_config.subject_output / "05_eddy" / "payload.txt").is_file()
 
 
+def test_group_force_archives_full_downstream_suffix_and_reruns_only_group_tail(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    run_pipeline(subject_config, "run")
+    prefix_records = {
+        name: (
+            subject_config.subject_output / name / ".stage_complete.json"
+        ).read_bytes()
+        for name in STAGE_ORDER[: STAGE_ORDER.index("05_eddy")]
+    }
+    calls.clear()
+
+    outcome = run_pipeline(
+        subject_config,
+        "run",
+        force_stage="05_eddy",
+        stage_group="eddy",
+    )
+
+    assert outcome.stage_statuses == (("04_bet", "skipped"), ("05_eddy", "completed"))
+    assert calls == ["05_eddy"]
+    assert all(
+        (
+            subject_config.subject_output / name / ".stage_complete.json"
+        ).read_bytes()
+        == record
+        for name, record in prefix_records.items()
+    )
+    assert all(
+        not (subject_config.subject_output / name).exists()
+        for name in STAGE_ORDER[STAGE_ORDER.index("06_dti") :]
+    )
+    archives = list((subject_config.subject_output / ".invalidated").iterdir())
+    assert len(archives) == 1
+    assert {
+        path.name for path in (archives[0] / "final").iterdir()
+    } == set(STAGE_ORDER[STAGE_ORDER.index("05_eddy") :])
+
+
+def test_group_uses_post_discovery_specs_for_selection_and_prerequisites(
+    subject_config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initial_calls: list[str] = []
+    discovered_calls: list[str] = []
+    initial_source = tmp_path / "initial-plan.py"
+    discovered_source = tmp_path / "discovered-plan.py"
+    initial_source.write_text("initial\n", encoding="utf-8")
+    discovered_source.write_text("discovered\n", encoding="utf-8")
+
+    def tagged_plan(config, calls: list[str], source: Path) -> list[StageSpec]:
+        return [
+            replace(spec, source_paths=(source,))
+            for spec in _simple_plan(config, "INCLUDE", calls)
+        ]
+
+    def build_discovery_sensitive_plan(config, runtime) -> list[StageSpec]:
+        if runtime.fsl is None:
+            return tagged_plan(config, initial_calls, initial_source)
+        return tagged_plan(config, discovered_calls, discovered_source)
+
+    def require_fsl(runtime):
+        runtime.fsl = object()
+        return runtime.fsl
+
+    def require_matlab(runtime):
+        runtime.matlab = object()
+        return runtime.matlab
+
+    monkeypatch.setattr(orchestrator, "_build_plan", build_discovery_sensitive_plan)
+    monkeypatch.setattr(orchestrator._Runtime, "require_fsl", require_fsl)
+    monkeypatch.setattr(orchestrator._Runtime, "require_matlab", require_matlab)
+    monkeypatch.setattr(orchestrator, "_software_provenance", lambda runtime: {"full": "1"})
+
+    topup = run_pipeline(subject_config, "run", stage_group="topup")
+    initial_calls.clear()
+    discovered_calls.clear()
+    eddy = run_pipeline(subject_config, "run", stage_group="eddy")
+
+    assert topup.status == "GROUP_COMPLETE"
+    assert eddy.status == "GROUP_COMPLETE"
+    assert initial_calls == []
+    assert discovered_calls == list(STAGE_GROUPS["eddy"])
+
+
 def test_fake_run_refuses_non_noddi_partial_work(
     subject_config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2778,6 +2901,50 @@ def test_grouped_dry_run_reports_only_eddy_outcomes_and_commands(
     assert len(commands) == 4
     after = {path.relative_to(subject_config.subject_output) for path in subject_config.subject_output.rglob("*")}
     assert after == before
+
+
+@pytest.mark.parametrize("group", ("eddy", "noddi"))
+@pytest.mark.parametrize("prerequisite_state", ("missing", "stale", "current"))
+def test_grouped_dry_run_requires_exact_current_hidden_prerequisites(
+    subject_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    group: str,
+    prerequisite_state: str,
+) -> None:
+    calls: list[str] = []
+    runtime, _ = _fake_runtime(tmp_path, subject_config)
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    monkeypatch.setattr(orchestrator, "_software_provenance", lambda runtime: {"full": "1"})
+    monkeypatch.setattr(orchestrator, "_dry_run_stage_commands", lambda *args, **kwargs: ())
+    prerequisites = ("topup",) if group == "eddy" else ("topup", "eddy")
+    if prerequisite_state != "missing":
+        for prerequisite in prerequisites:
+            run_pipeline(subject_config, "run", stage_group=prerequisite)
+        if prerequisite_state == "stale":
+            stale_stage = "03_topup" if group == "eddy" else "05_eddy"
+            (
+                subject_config.subject_output / stale_stage / "payload.txt"
+            ).write_text("tampered\n", encoding="utf-8")
+
+    outcomes = _dry_run(
+        subject_config,
+        audit_inputs(subject_config),
+        _simple_plan(subject_config, "INCLUDE", calls),
+        runtime,
+        stage_group=group,
+    )
+
+    expected = "runnable" if prerequisite_state == "current" else "blocked"
+    assert tuple(outcome.stage for outcome in outcomes) == STAGE_GROUPS[group]
+    assert all(outcome.status == expected for outcome in outcomes)
+    output = capsys.readouterr().out
+    if prerequisite_state == "missing":
+        assert "prerequisite 00_input_audit: missing" in output
+    elif prerequisite_state == "stale":
+        stale_stage = "03_topup" if group == "eddy" else "05_eddy"
+        assert f"prerequisite {stale_stage}: stale" in output
 
 
 def test_dry_run_reports_dangling_final_symlink_as_stale_and_blocks_dependents(

@@ -9,6 +9,15 @@ dmri_fail() {
     exit 30
 }
 
+fail() {
+    dmri_fail "$@"
+}
+
+# Reuse the public wrapper's private software-config loader and its fixed-key,
+# clean-environment import protocol.
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/rocky_environment.sh"
+
 dmri_reject_control_characters() {
     local name=$1 value=$2
     if [[ "${value}" == *[[:cntrl:]]* ]]; then
@@ -87,11 +96,11 @@ dmri_load_cluster_config() {
         EDDY_WALLTIME EDDY_MEM EDDY_NCPUS
         NODDI_WALLTIME NODDI_MEM NODDI_NCPUS
     )
-    for key in "${required_keys[@]}"; do
-        unset "${key}"
-    done
-    # shellcheck disable=SC1090
-    source "${cluster_config}"
+    load_private_shell_config_values \
+        "${cluster_config}" \
+        "cluster configuration" \
+        "cluster configuration" \
+        "${required_keys[@]}"
     for key in "${required_keys[@]}"; do
         dmri_require_value "${key}" "${!key-}"
     done
@@ -112,12 +121,8 @@ dmri_load_cluster_config() {
 
 dmri_configured_conda() {
     local configured_conda
-    configured_conda=$(
-        unset CONDA_EXE
-        # shellcheck disable=SC1090
-        source "${DMRI_SOFTWARE_CONFIG}"
-        printf '%s' "${CONDA_EXE-}"
-    )
+    load_software_config
+    configured_conda=${CONDA_EXE}
     dmri_require_absolute_executable "configured CONDA_EXE" "${configured_conda}"
     printf '%s\n' "${configured_conda}"
 }
@@ -209,8 +214,65 @@ dmri_shell_join() {
 
 dmri_write_record() {
     local target=$1 value=$2 temporary="${1}.tmp.$$"
-    printf '%s\n' "${value}" > "${temporary}"
-    mv -f -- "${temporary}" "${target}"
+    dmri_require_record_target "${target}"
+    if [[ -e "${temporary}" || -L "${temporary}" ]]; then
+        dmri_fail "temporary record path already exists: ${temporary}"
+    fi
+    if ! printf '%s\n' "${value}" > "${temporary}"; then
+        dmri_fail "could not write temporary record: ${temporary}"
+    fi
+    [[ -f "${temporary}" && ! -L "${temporary}" ]] \
+        || dmri_fail "temporary record is not a regular file: ${temporary}"
+    if ! mv -f -- "${temporary}" "${target}"; then
+        dmri_fail "could not publish record: ${target}"
+    fi
+    [[ -f "${target}" && ! -L "${target}" ]] \
+        || dmri_fail "published record is not a regular file: ${target}"
+}
+
+dmri_require_record_target() {
+    local target=$1
+    if [[ -L "${target}" || ( -e "${target}" && ! -f "${target}" ) ]]; then
+        dmri_fail "record target must be absent or a regular non-symlink file: ${target}"
+    fi
+}
+
+dmri_write_arguments_record() {
+    local target=$1 argument quoted contents=""
+    shift
+    for argument in "$@"; do
+        if ! printf -v quoted '%q' "${argument}"; then
+            dmri_fail "could not encode submission argument record: ${target}"
+        fi
+        contents="${contents}${quoted}"$'\n'
+    done
+    contents=${contents%$'\n'}
+    dmri_write_record "${target}" "${contents}"
+}
+
+dmri_prepare_capture_record() {
+    local target=$1 temporary=$2
+    dmri_require_record_target "${target}"
+    if [[ -e "${temporary}" || -L "${temporary}" ]]; then
+        dmri_fail "temporary record path already exists: ${temporary}"
+    fi
+    if ! : > "${temporary}"; then
+        dmri_fail "could not create temporary record: ${temporary}"
+    fi
+    [[ -f "${temporary}" && ! -L "${temporary}" ]] \
+        || dmri_fail "temporary record is not a regular file: ${temporary}"
+}
+
+dmri_publish_capture_record() {
+    local temporary=$1 target=$2
+    dmri_require_record_target "${target}"
+    [[ -f "${temporary}" && ! -L "${temporary}" ]] \
+        || dmri_fail "temporary record is not a regular file: ${temporary}"
+    if ! mv -f -- "${temporary}" "${target}"; then
+        dmri_fail "could not publish record: ${target}"
+    fi
+    [[ -f "${target}" && ! -L "${target}" ]] \
+        || dmri_fail "published record is not a regular file: ${target}"
 }
 
 dmri_require_safe_chain_target() {
@@ -221,7 +283,9 @@ dmri_require_safe_chain_target() {
 
 dmri_submit_group() {
     local group=$1 subject_config=$2 cluster_config=$3 chain_id=$4 chain_dir=$5
-    local wrapper command status argument
+    local wrapper command status submitted_at
+    local argv_record stdout_record stderr_record exit_record marker
+    local stdout_temporary stderr_temporary
     local submit_arguments=()
     dmri_resource_for_group "${group}"
     wrapper="${CLUSTER_SCRIPT_DIR}/run_${group}_subject.sh"
@@ -238,26 +302,45 @@ dmri_submit_group() {
     )
     dmri_require_safe_chain_target "${chain_dir}/logs/${group}.out"
     dmri_require_safe_chain_target "${chain_dir}/logs/${group}.err"
-    dmri_require_safe_chain_target "${chain_dir}/submissions/${group}.argv"
-    dmri_require_safe_chain_target "${chain_dir}/submissions/${group}.stdout"
-    dmri_require_safe_chain_target "${chain_dir}/submissions/${group}.stderr"
-    dmri_require_safe_chain_target "${chain_dir}/submissions/${group}.exit_status"
-    : > "${chain_dir}/submissions/${group}.argv"
-    for argument in "${submit_arguments[@]}"; do
-        printf '%q\n' "${argument}" >> "${chain_dir}/submissions/${group}.argv"
-    done
+    argv_record="${chain_dir}/submissions/${group}.argv"
+    stdout_record="${chain_dir}/submissions/${group}.stdout"
+    stderr_record="${chain_dir}/submissions/${group}.stderr"
+    exit_record="${chain_dir}/submissions/${group}.exit_status"
+    marker="${chain_dir}/${group}.submitted"
+    stdout_temporary="${stdout_record}.tmp.$$"
+    stderr_temporary="${stderr_record}.tmp.$$"
+    dmri_require_safe_chain_target "${argv_record}"
+    dmri_require_safe_chain_target "${stdout_record}"
+    dmri_require_safe_chain_target "${stderr_record}"
+    dmri_require_safe_chain_target "${exit_record}"
+    dmri_require_safe_chain_target "${marker}"
+    dmri_require_record_target "${argv_record}"
+    dmri_require_record_target "${stdout_record}"
+    dmri_require_record_target "${stderr_record}"
+    dmri_require_record_target "${exit_record}"
+    dmri_require_record_target "${marker}"
+    dmri_write_arguments_record "${argv_record}" "${submit_arguments[@]}"
+    dmri_prepare_capture_record "${stdout_record}" "${stdout_temporary}"
+    dmri_prepare_capture_record "${stderr_record}" "${stderr_temporary}"
     if "${CBIG_PBSUBMIT}" "${submit_arguments[@]}" \
-        > "${chain_dir}/submissions/${group}.stdout" \
-        2> "${chain_dir}/submissions/${group}.stderr"
+        > "${stdout_temporary}" \
+        2> "${stderr_temporary}"
     then
         status=0
     else
         status=$?
     fi
-    dmri_write_record "${chain_dir}/submissions/${group}.exit_status" "${status}"
     if (( status == 0 )); then
-        dmri_write_record "${chain_dir}/${group}.submitted" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        DMRI_RETAIN_OWNED_SUBMISSION_LOCK=1
+        if ! submitted_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); then
+            dmri_fail "could not timestamp accepted ${group} submission"
+        fi
+        dmri_write_record "${marker}" "${submitted_at}"
+        DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
     fi
+    dmri_publish_capture_record "${stdout_temporary}" "${stdout_record}"
+    dmri_publish_capture_record "${stderr_temporary}" "${stderr_record}"
+    dmri_write_record "${exit_record}" "${status}"
     return "${status}"
 }
 
@@ -285,7 +368,8 @@ dmri_resolve_chain_directory() {
 
 dmri_load_chain() {
     local subject_config=$1 cluster_config=$2 chain_id=$3
-    local stored_subject stored_cluster immutable_noddi_workers
+    local stored_subject stored_cluster stored_subject_id stored_subject_output
+    local immutable_noddi_workers
     dmri_validate_input_paths "${subject_config}" "${cluster_config}"
     dmri_load_cluster_config "${cluster_config}"
     dmri_validate_chain_id "${chain_id}"
@@ -298,13 +382,25 @@ dmri_load_chain() {
         "chain submissions directory" "${CHAIN_DIR}/submissions" >/dev/null
     [[ -f "${CHAIN_DIR}/subject_config" \
         && -f "${CHAIN_DIR}/cluster_config" \
+        && -f "${CHAIN_DIR}/subject_id" \
+        && -f "${CHAIN_DIR}/subject_output" \
         && -f "${CHAIN_DIR}/noddi_workers" ]] \
         || dmri_fail "chain immutable inputs are missing"
     dmri_require_safe_chain_target "${CHAIN_DIR}/subject_config"
     dmri_require_safe_chain_target "${CHAIN_DIR}/cluster_config"
+    dmri_require_safe_chain_target "${CHAIN_DIR}/subject_id"
+    dmri_require_safe_chain_target "${CHAIN_DIR}/subject_output"
     dmri_require_safe_chain_target "${CHAIN_DIR}/noddi_workers"
-    IFS= read -r stored_subject < "${CHAIN_DIR}/subject_config" || true
-    IFS= read -r stored_cluster < "${CHAIN_DIR}/cluster_config" || true
+    stored_subject=$(< "${CHAIN_DIR}/subject_config")
+    stored_cluster=$(< "${CHAIN_DIR}/cluster_config")
+    stored_subject_id=$(< "${CHAIN_DIR}/subject_id")
+    stored_subject_output=$(< "${CHAIN_DIR}/subject_output")
+    dmri_require_value "immutable subject configuration" "${stored_subject}"
+    dmri_require_value "immutable cluster configuration" "${stored_cluster}"
+    dmri_require_value "immutable subject_id" "${stored_subject_id}"
+    dmri_require_value "immutable subject_output" "${stored_subject_output}"
+    [[ "${stored_subject_output}" == /* ]] \
+        || dmri_fail "immutable subject_output must be an absolute path"
     [[ "${stored_subject}" == "${subject_config}" ]] \
         || dmri_fail "subject configuration does not match immutable chain input"
     [[ "${stored_cluster}" == "${cluster_config}" ]] \
@@ -315,34 +411,67 @@ dmri_load_chain() {
     if (( NODDI_NCPUS < immutable_noddi_workers )); then
         dmri_fail "NODDI_NCPUS must be at least the immutable noddi_workers"
     fi
+    dmri_read_subject_context "${subject_config}"
+    [[ "${SUBJECT_ID}" == "${stored_subject_id}" ]] \
+        || dmri_fail "live subject_id does not match immutable chain context"
+    [[ "${SUBJECT_OUTPUT}" == "${stored_subject_output}" ]] \
+        || dmri_fail "live subject_output does not match immutable chain context"
+    [[ "${NODDI_WORKERS}" == "${immutable_noddi_workers}" ]] \
+        || dmri_fail "live noddi_workers does not match immutable chain context"
 }
 
 DMRI_OWNED_SUBMISSION_LOCK=""
+DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
 
 dmri_release_owned_submission_lock() {
-    if [[ -n "${DMRI_OWNED_SUBMISSION_LOCK}" ]]; then
-        rmdir -- "${DMRI_OWNED_SUBMISSION_LOCK}" 2>/dev/null || true
-        DMRI_OWNED_SUBMISSION_LOCK=""
+    local owner
+    [[ -n "${DMRI_OWNED_SUBMISSION_LOCK}" ]] || return 0
+    (( DMRI_RETAIN_OWNED_SUBMISSION_LOCK == 0 )) || return 0
+    owner="${DMRI_OWNED_SUBMISSION_LOCK}/owner"
+    if [[ -L "${owner}" || ( -e "${owner}" && ! -f "${owner}" ) ]]; then
+        return 30
     fi
+    if [[ -f "${owner}" ]] && ! rm -f -- "${owner}"; then
+        return 30
+    fi
+    if ! rmdir -- "${DMRI_OWNED_SUBMISSION_LOCK}" 2>/dev/null; then
+        return 30
+    fi
+    DMRI_OWNED_SUBMISSION_LOCK=""
+    return 0
 }
 
 dmri_advance_chain() {
-    local successor=$1 subject_config=$2 cluster_config=$3 chain_id=$4
+    local source_group=$1 successor=$2 subject_config=$3 cluster_config=$4 chain_id=$5
     local marker="${CHAIN_DIR}/${successor}.submitted"
     local lock="${CHAIN_DIR}/.${successor}.submission.lock"
-    local submit_status
+    local submit_status acquired_at lock_owner
+    dmri_require_record_target "${marker}"
     if [[ -f "${marker}" ]]; then
-        dmri_write_record "${CHAIN_DIR}/status" "${successor}_submitted"
         return 0
     fi
+    dmri_require_record_target "${CHAIN_DIR}/status"
+    dmri_require_record_target "${CHAIN_DIR}/submission_failed"
     if ! mkdir -- "${lock}" 2>/dev/null; then
         dmri_fail "successor submission is locked: ${successor}"
     fi
     DMRI_OWNED_SUBMISSION_LOCK=${lock}
-    trap dmri_release_owned_submission_lock EXIT
+    DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
+    trap 'dmri_release_owned_submission_lock || true' EXIT
+    if ! acquired_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); then
+        dmri_fail "could not timestamp successor submission lock"
+    fi
+    lock_owner="chain_id=${chain_id}"$'\n'
+    lock_owner="${lock_owner}source_group=${source_group}"$'\n'
+    lock_owner="${lock_owner}successor=${successor}"$'\n'
+    lock_owner="${lock_owner}job_name=dmri_${successor}_${chain_id}"$'\n'
+    lock_owner="${lock_owner}pid=$$"$'\n'
+    lock_owner="${lock_owner}acquired_utc=${acquired_at}"
+    dmri_write_record "${lock}/owner" "${lock_owner}"
+    dmri_require_record_target "${marker}"
     if [[ -f "${marker}" ]]; then
-        dmri_write_record "${CHAIN_DIR}/status" "${successor}_submitted"
-        dmri_release_owned_submission_lock
+        dmri_release_owned_submission_lock \
+            || dmri_fail "could not release owned successor submission lock"
         trap - EXIT
         return 0
     fi
@@ -350,7 +479,8 @@ dmri_advance_chain() {
         "${successor}" "${subject_config}" "${cluster_config}" "${chain_id}" "${CHAIN_DIR}"
     then
         dmri_write_record "${CHAIN_DIR}/status" "${successor}_submitted"
-        dmri_release_owned_submission_lock
+        dmri_release_owned_submission_lock \
+            || dmri_fail "could not release owned successor submission lock"
         trap - EXIT
         return 0
     else
@@ -358,7 +488,8 @@ dmri_advance_chain() {
     fi
     dmri_write_record "${CHAIN_DIR}/status" "submission_failed"
     dmri_write_record "${CHAIN_DIR}/submission_failed" "${successor}"
-    dmri_release_owned_submission_lock
+    dmri_release_owned_submission_lock \
+        || dmri_fail "could not release owned successor submission lock"
     trap - EXIT
     return "${submit_status}"
 }
@@ -389,7 +520,7 @@ dmri_run_worker() {
         return 0
     fi
     if dmri_advance_chain \
-        "${successor}" "${subject_config}" "${cluster_config}" "${chain_id}"
+        "${group}" "${successor}" "${subject_config}" "${cluster_config}" "${chain_id}"
     then
         return 0
     else
