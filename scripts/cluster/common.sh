@@ -139,6 +139,7 @@ dmri_read_subject_context() {
     if ! parsed_context=$(
         DMRI_CLUSTER_CONTEXT_JSON="${context_json}" \
             "${conda_exe}" run --no-capture-output -n dmri-repro python -c '
+import hashlib
 import json
 import os
 import sys
@@ -165,15 +166,22 @@ if not subject_output.startswith("/"):
     fail("subject_output must be an absolute path")
 if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
     fail("noddi_workers must be a positive integer")
-print("%s\t%s\t%d" % (subject_id, subject_output, workers))
+subject_submission_key = hashlib.sha256(subject_output.encode("utf-8")).hexdigest()
+print("%s\t%s\t%d\t%s" % (
+    subject_id, subject_output, workers, subject_submission_key
+))
 '
     ); then
         dmri_fail "invalid cluster context"
     fi
-    IFS=$'\t' read -r SUBJECT_ID SUBJECT_OUTPUT NODDI_WORKERS <<< "${parsed_context}"
+    IFS=$'\t' read -r \
+        SUBJECT_ID SUBJECT_OUTPUT NODDI_WORKERS SUBJECT_SUBMISSION_KEY \
+        <<< "${parsed_context}"
     dmri_require_value "subject_id" "${SUBJECT_ID}"
     dmri_require_value "subject_output" "${SUBJECT_OUTPUT}"
     dmri_validate_positive_integer "noddi_workers" "${NODDI_WORKERS}"
+    [[ "${SUBJECT_SUBMISSION_KEY}" =~ ^[0-9a-f]{64}$ ]] \
+        || dmri_fail "invalid subject submission guard key"
 }
 
 dmri_resource_for_group() {
@@ -322,6 +330,10 @@ dmri_submit_group() {
     dmri_write_arguments_record "${argv_record}" "${submit_arguments[@]}"
     dmri_prepare_capture_record "${stdout_record}" "${stdout_temporary}"
     dmri_prepare_capture_record "${stderr_record}" "${stderr_temporary}"
+    # From the instant the scheduler is invoked, acceptance is uncertain until
+    # the caller has durably recorded the complete result.  The caller releases
+    # only after its global chain records are also durable.
+    DMRI_RETAIN_OWNED_SUBMISSION_LOCK=1
     if "${CBIG_PBSUBMIT}" "${submit_arguments[@]}" \
         > "${stdout_temporary}" \
         2> "${stderr_temporary}"
@@ -331,12 +343,10 @@ dmri_submit_group() {
         status=$?
     fi
     if (( status == 0 )); then
-        DMRI_RETAIN_OWNED_SUBMISSION_LOCK=1
         if ! submitted_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); then
             dmri_fail "could not timestamp accepted ${group} submission"
         fi
         dmri_write_record "${marker}" "${submitted_at}"
-        DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
     fi
     dmri_publish_capture_record "${stdout_temporary}" "${stdout_record}"
     dmri_publish_capture_record "${stderr_temporary}" "${stderr_record}"
@@ -421,31 +431,125 @@ dmri_load_chain() {
 }
 
 DMRI_OWNED_SUBMISSION_LOCK=""
+DMRI_OWNED_SUBMISSION_LOCK_PARENT=""
 DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
+DMRI_SUBMISSION_LOCK_ACQUIRED_AT=""
+DMRI_SUBMISSION_LOCK_HOST=""
+DMRI_SUBMISSION_LOCK_START_GROUP=""
+
+dmri_current_hostname() {
+    local hostname_executable hostname_value
+    if [[ -x /bin/hostname ]]; then
+        hostname_executable=/bin/hostname
+    elif [[ -x /usr/bin/hostname ]]; then
+        hostname_executable=/usr/bin/hostname
+    else
+        dmri_fail "could not locate hostname executable for submission lock"
+    fi
+    if ! hostname_value=$("${hostname_executable}"); then
+        dmri_fail "could not identify host for submission lock"
+    fi
+    dmri_require_value "submission lock host" "${hostname_value}"
+    printf '%s\n' "${hostname_value}"
+}
 
 dmri_release_owned_submission_lock() {
-    local owner
+    local owner parent
     [[ -n "${DMRI_OWNED_SUBMISSION_LOCK}" ]] || return 0
     (( DMRI_RETAIN_OWNED_SUBMISSION_LOCK == 0 )) || return 0
     owner="${DMRI_OWNED_SUBMISSION_LOCK}/owner"
+    parent=${DMRI_OWNED_SUBMISSION_LOCK_PARENT}
     if [[ -L "${owner}" || ( -e "${owner}" && ! -f "${owner}" ) ]]; then
+        DMRI_RETAIN_OWNED_SUBMISSION_LOCK=1
         return 30
     fi
     if [[ -f "${owner}" ]] && ! rm -f -- "${owner}"; then
+        DMRI_RETAIN_OWNED_SUBMISSION_LOCK=1
         return 30
     fi
     if ! rmdir -- "${DMRI_OWNED_SUBMISSION_LOCK}" 2>/dev/null; then
+        # Do not let the EXIT trap turn an explicit unlock failure into a
+        # successful retry.  Even an empty directory remains a fail-closed
+        # record that must be reconciled by an operator.
+        DMRI_RETAIN_OWNED_SUBMISSION_LOCK=1
         return 30
     fi
     DMRI_OWNED_SUBMISSION_LOCK=""
+    DMRI_OWNED_SUBMISSION_LOCK_PARENT=""
+    DMRI_SUBMISSION_LOCK_ACQUIRED_AT=""
+    DMRI_SUBMISSION_LOCK_HOST=""
+    DMRI_SUBMISSION_LOCK_START_GROUP=""
+    if [[ -n "${parent}" ]]; then
+        rmdir -- "${parent}" 2>/dev/null || true
+    fi
     return 0
+}
+
+dmri_acquire_subject_submission_lock() {
+    local start_group=$1 lock_root lock lock_owner
+    lock_root="${CLUSTER_RUN_ROOT}/.subject-submission-locks"
+    if [[ -L "${lock_root}" || ( -e "${lock_root}" && ! -d "${lock_root}" ) ]]; then
+        dmri_fail "subject submission lock root must be a regular directory"
+    fi
+    if [[ ! -d "${lock_root}" ]] && ! mkdir -- "${lock_root}" 2>/dev/null; then
+        [[ -d "${lock_root}" && ! -L "${lock_root}" ]] \
+            || dmri_fail "could not create subject submission lock root"
+    fi
+    dmri_resolve_chain_directory \
+        "subject submission lock root" "${lock_root}" >/dev/null
+    lock="${lock_root}/${SUBJECT_SUBMISSION_KEY}.lock"
+    if ! mkdir -- "${lock}" 2>/dev/null; then
+        dmri_fail \
+            "subject submission is locked; reconcile scheduler state before retrying: ${lock}"
+    fi
+    DMRI_OWNED_SUBMISSION_LOCK=${lock}
+    DMRI_OWNED_SUBMISSION_LOCK_PARENT=${lock_root}
+    DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
+    trap 'dmri_release_owned_submission_lock || true' EXIT
+    if ! DMRI_SUBMISSION_LOCK_ACQUIRED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); then
+        dmri_fail "could not timestamp subject submission lock"
+    fi
+    if ! DMRI_SUBMISSION_LOCK_HOST=$(dmri_current_hostname); then
+        dmri_fail "could not identify host for subject submission lock"
+    fi
+    DMRI_SUBMISSION_LOCK_START_GROUP=${start_group}
+    lock_owner="subject_key=${SUBJECT_SUBMISSION_KEY}"$'\n'
+    lock_owner="${lock_owner}subject_id=${SUBJECT_ID}"$'\n'
+    lock_owner="${lock_owner}subject_output=${SUBJECT_OUTPUT}"$'\n'
+    lock_owner="${lock_owner}start_group=${start_group}"$'\n'
+    lock_owner="${lock_owner}state=allocating_chain"$'\n'
+    lock_owner="${lock_owner}host=${DMRI_SUBMISSION_LOCK_HOST}"$'\n'
+    lock_owner="${lock_owner}pid=$$"$'\n'
+    lock_owner="${lock_owner}acquired_utc=${DMRI_SUBMISSION_LOCK_ACQUIRED_AT}"
+    dmri_write_record "${lock}/owner" "${lock_owner}"
+}
+
+dmri_record_subject_submission_attempt() {
+    local chain_id=$1 lock_owner
+    [[ -n "${DMRI_OWNED_SUBMISSION_LOCK}" ]] \
+        || dmri_fail "subject submission lock is not owned"
+    lock_owner="subject_key=${SUBJECT_SUBMISSION_KEY}"$'\n'
+    lock_owner="${lock_owner}subject_id=${SUBJECT_ID}"$'\n'
+    lock_owner="${lock_owner}subject_output=${SUBJECT_OUTPUT}"$'\n'
+    lock_owner="${lock_owner}chain_id=${chain_id}"$'\n'
+    lock_owner="${lock_owner}start_group=${DMRI_SUBMISSION_LOCK_START_GROUP}"$'\n'
+    lock_owner="${lock_owner}job_name=dmri_${DMRI_SUBMISSION_LOCK_START_GROUP}_${chain_id}"$'\n'
+    lock_owner="${lock_owner}state=submitting"$'\n'
+    lock_owner="${lock_owner}host=${DMRI_SUBMISSION_LOCK_HOST}"$'\n'
+    lock_owner="${lock_owner}pid=$$"$'\n'
+    lock_owner="${lock_owner}acquired_utc=${DMRI_SUBMISSION_LOCK_ACQUIRED_AT}"
+    dmri_write_record "${DMRI_OWNED_SUBMISSION_LOCK}/owner" "${lock_owner}"
 }
 
 dmri_advance_chain() {
     local source_group=$1 successor=$2 subject_config=$3 cluster_config=$4 chain_id=$5
     local marker="${CHAIN_DIR}/${successor}.submitted"
     local lock="${CHAIN_DIR}/.${successor}.submission.lock"
-    local submit_status acquired_at lock_owner
+    local submit_status acquired_at lock_host lock_owner
+    if [[ -e "${lock}" || -L "${lock}" ]]; then
+        dmri_fail \
+            "successor submission is locked; reconcile scheduler state before retrying: ${successor}"
+    fi
     dmri_require_record_target "${marker}"
     if [[ -f "${marker}" ]]; then
         return 0
@@ -461,10 +565,14 @@ dmri_advance_chain() {
     if ! acquired_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); then
         dmri_fail "could not timestamp successor submission lock"
     fi
+    if ! lock_host=$(dmri_current_hostname); then
+        dmri_fail "could not identify host for successor submission lock"
+    fi
     lock_owner="chain_id=${chain_id}"$'\n'
     lock_owner="${lock_owner}source_group=${source_group}"$'\n'
     lock_owner="${lock_owner}successor=${successor}"$'\n'
     lock_owner="${lock_owner}job_name=dmri_${successor}_${chain_id}"$'\n'
+    lock_owner="${lock_owner}host=${lock_host}"$'\n'
     lock_owner="${lock_owner}pid=$$"$'\n'
     lock_owner="${lock_owner}acquired_utc=${acquired_at}"
     dmri_write_record "${lock}/owner" "${lock_owner}"
@@ -479,6 +587,7 @@ dmri_advance_chain() {
         "${successor}" "${subject_config}" "${cluster_config}" "${chain_id}" "${CHAIN_DIR}"
     then
         dmri_write_record "${CHAIN_DIR}/status" "${successor}_submitted"
+        DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
         dmri_release_owned_submission_lock \
             || dmri_fail "could not release owned successor submission lock"
         trap - EXIT
@@ -488,6 +597,7 @@ dmri_advance_chain() {
     fi
     dmri_write_record "${CHAIN_DIR}/status" "submission_failed"
     dmri_write_record "${CHAIN_DIR}/submission_failed" "${successor}"
+    DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
     dmri_release_owned_submission_lock \
         || dmri_fail "could not release owned successor submission lock"
     trap - EXIT

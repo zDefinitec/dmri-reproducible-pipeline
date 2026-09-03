@@ -113,20 +113,45 @@ or stage evidence as a recovery step. The pipeline's existing resumable stage
 state determines what must be recomputed; use `--start-at` only after checking
 the recorded chain state and prerequisites.
 
-### Stale successor-submission locks
+### Stale submission locks
 
-Successor submission is fail-closed. A process killed after scheduler
-acceptance can leave `.eddy.submission.lock` or `.noddi.submission.lock` in the
-chain directory. Its `owner` record contains the chain ID, source and successor
-groups, scheduler job name, wrapper PID, and acquisition time. A dead PID alone
-does not prove that the scheduler rejected the job.
+Initial and successor submission are fail-closed. The launcher holds a
+subject-scoped guard at
+`.subject-submission-locks/SUBJECT_OUTPUT_HASH.lock` under `CLUSTER_RUN_ROOT`;
+it releases the guard only after the initial scheduler result and every chain
+record are durable. A process killed after scheduler acceptance, or a durable
+record failure after acceptance, leaves that guard in place so a new chain for
+the same subject output cannot submit a duplicate job. Successor workers use
+`.eddy.submission.lock` or `.noddi.submission.lock` in the chain directory.
+
+Each lock's `owner` record identifies the subject or chain, requested group,
+scheduler job name when allocated, host, wrapper PID, and acquisition time. A
+dead PID alone does not prove that the scheduler rejected the job. An initial
+guard with `state=allocating_chain` can result from abrupt death before a chain
+or scheduler call existed, but still requires process and scheduler
+reconciliation before removal. Abrupt death in the tiny interval between the
+atomic lock-directory creation and publication of `owner` can instead leave an
+empty lock. Treat an empty lock as uncertain too: identify the host and process
+from scheduler and system logs and confirm that no matching submission reached
+the scheduler before removing it.
 
 Never blindly delete or supersede one of these locks. First inspect its `owner`
-record, the matching `*.submitted` marker, `status`, and every
+record, the matching chain's `*.submitted` marker and `status`, and every
 `submissions/GROUP.*` record. Then reconcile the recorded job name
 `dmri_GROUP_CHAIN_ID` against scheduler history and the live queue. If that job
-is queued, running, or completed, do not resubmit it. Only after confirming
-that no lock owner is live and no matching job was accepted may an operator
-remove the exact stale `owner` file and its now-empty lock directory. If
-scheduler acceptance remains uncertain, leave the chain locked and do not
-launch a replacement `--start-at` chain until reconciliation is complete.
+is queued or running, leave the lock in place and do not resubmit it. If the
+job was accepted, wait for its terminal scheduler state and reconcile that
+exact job against its chain logs, worker exit/status records, and scientific
+stage evidence. Repair any invalid record target only after identifying why
+the durable write failed. Once the accepted job has a known terminal outcome
+and cannot be duplicated, preserve the reconciliation evidence with the chain;
+then the exact stale `owner` file and its now-empty lock directory may be
+removed. Base any later recovery chain on the reconciled scientific state, not
+on a replacement submission of the already accepted job.
+
+If scheduler history proves that no matching job was accepted, and the
+recorded host/PID is no longer live, the same exact-owner removal is safe. The
+empty `.subject-submission-locks` parent may then be removed. If scheduler
+acceptance or terminal outcome remains uncertain, leave the subject or chain
+locked and do not launch a replacement `--start-at` chain until reconciliation
+is complete.

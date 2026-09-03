@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -72,6 +73,20 @@ def cluster_package(tmp_path: Path) -> dict[str, Path | dict[str, str]]:
         "fi\n"
         "exec /usr/bin/stat \"$@\"\n",
     )
+    _write_executable(
+        fake_bin / "rmdir",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "target=${2-}\n"
+        "if [[ -n ${FAKE_RMDIR_FAIL_ONCE_FOR-} "
+        "&& ${target} == \"${FAKE_RMDIR_FAIL_ONCE_FOR}\" "
+        "&& ! -e ${FAKE_RMDIR_FAILURE_STATE} ]]; then\n"
+        "  : > \"${FAKE_RMDIR_FAILURE_STATE}\"\n"
+        "  exit 1\n"
+        "fi\n"
+        "if [[ -x /bin/rmdir ]]; then exec /bin/rmdir \"$@\"; fi\n"
+        "exec /usr/bin/rmdir \"$@\"\n",
+    )
     fake_conda = _write_executable(
         fake_bin / "conda",
         "#!/usr/bin/env bash\n"
@@ -96,6 +111,18 @@ def cluster_package(tmp_path: Path) -> dict[str, Path | dict[str, str]]:
         "if [[ -n ${CBIG_INJECT_DIRECTORY-} ]]; then\n"
         "  rm -f -- \"${CBIG_INJECT_DIRECTORY}\"\n"
         "  mkdir -- \"${CBIG_INJECT_DIRECTORY}\"\n"
+        "fi\n"
+        "if [[ -n ${CBIG_INJECT_RELATIVE_DIRECTORY-} ]]; then\n"
+        "  jobout=\n"
+        "  while (( $# )); do\n"
+        "    if [[ $1 == -jobout ]]; then jobout=$2; break; fi\n"
+        "    shift\n"
+        "  done\n"
+        "  logs_directory=${jobout%/*}\n"
+        "  chain_directory=${logs_directory%/*}\n"
+        "  injected=${chain_directory}/${CBIG_INJECT_RELATIVE_DIRECTORY}\n"
+        "  rm -f -- \"${injected}\"\n"
+        "  mkdir -- \"${injected}\"\n"
         "fi\n"
         "if [[ -n ${CBIG_BLOCK_READY-} ]]; then\n"
         "  printf 'entered\\n' >> \"${CBIG_BLOCK_READY}\"\n"
@@ -205,6 +232,30 @@ def _run_launcher(
         capture_output=True,
         check=False,
     )
+
+
+def _run_launcher_with_closed_stdout(
+    fixture: dict[str, Path | dict[str, str]],
+    environment: dict[str, str],
+    *arguments: str,
+) -> subprocess.CompletedProcess[str]:
+    package = fixture["package"]
+    assert isinstance(package, Path)
+    launcher = package / "scripts" / "cluster" / "submit_subject_chain.sh"
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    try:
+        return subprocess.run(
+            [str(launcher), *arguments],
+            cwd=package,
+            env=environment,
+            stdout=write_fd,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    finally:
+        os.close(write_fd)
 
 
 def _nul_arguments(path: Path) -> list[str]:
@@ -774,6 +825,176 @@ def test_launcher_submits_requested_start_group_with_exact_resources(
 
 
 @pytest.mark.parametrize(
+    "injected_target",
+    [
+        "topup.submitted",
+        "submissions/topup.stdout",
+        "submissions/topup.stderr",
+        "submissions/topup.exit_status",
+        "status",
+    ],
+)
+def test_launcher_retains_subject_guard_when_accepted_submission_record_fails(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    injected_target: str,
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    run_root = cluster_package["run_root"]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(run_root, Path)
+    environment = _environment(tmp_path)
+    environment["CBIG_INJECT_RELATIVE_DIRECTORY"] = injected_target
+
+    first = _run_launcher(
+        cluster_package,
+        environment,
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert first.returncode == 30
+    assert "record" in first.stderr.lower()
+    first_submission = (tmp_path / "cbig.argv").read_bytes()
+    chain_directories = sorted(run_root.glob("chain-*"))
+    assert len(chain_directories) == 1
+    guard_root = run_root / ".subject-submission-locks"
+    guards = list(guard_root.iterdir())
+    assert len(guards) == 1
+    owner = guards[0] / "owner"
+    owner_text = owner.read_text(encoding="utf-8")
+    assert f"chain_id={chain_directories[0].name}\n" in owner_text
+    assert "start_group=topup\n" in owner_text
+    assert f"job_name=dmri_topup_{chain_directories[0].name}\n" in owner_text
+    assert "host=" in owner_text
+    assert "pid=" in owner_text
+    assert "acquired_utc=" in owner_text
+
+    environment.pop("CBIG_INJECT_RELATIVE_DIRECTORY")
+    retry = _run_launcher(
+        cluster_package,
+        environment,
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert retry.returncode == 30
+    assert "subject submission is locked" in retry.stderr.lower()
+    assert "reconcile" in retry.stderr.lower()
+    assert (tmp_path / "cbig.argv").read_bytes() == first_submission
+    assert sorted(run_root.glob("chain-*")) == chain_directories
+
+
+def test_launcher_releases_subject_guard_after_definite_scheduler_rejection(
+    cluster_package: dict[str, Path | dict[str, str]], tmp_path: Path
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    run_root = cluster_package["run_root"]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(run_root, Path)
+    environment = _environment(tmp_path)
+    environment["CBIG_EXIT"] = "73"
+
+    rejected = _run_launcher(
+        cluster_package,
+        environment,
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert rejected.returncode == 73
+    assert not (run_root / ".subject-submission-locks").exists()
+    environment.pop("CBIG_EXIT")
+    accepted = _run_launcher(
+        cluster_package,
+        environment,
+        str(subject),
+        str(cluster_config),
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    assert _nul_arguments(tmp_path / "cbig.argv").count("-cmd") == 2
+
+
+def test_launcher_retains_subject_guard_when_final_success_output_fails(
+    cluster_package: dict[str, Path | dict[str, str]], tmp_path: Path
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    run_root = cluster_package["run_root"]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(run_root, Path)
+    environment = _environment(tmp_path)
+
+    first = _run_launcher_with_closed_stdout(
+        cluster_package,
+        environment,
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert first.returncode != 0
+    first_submission = (tmp_path / "cbig.argv").read_bytes()
+    guard_root = run_root / ".subject-submission-locks"
+    guards = list(guard_root.iterdir())
+    assert len(guards) == 1
+    retry = _run_launcher(
+        cluster_package,
+        environment,
+        str(subject),
+        str(cluster_config),
+    )
+    assert retry.returncode == 30
+    assert "subject submission is locked" in retry.stderr.lower()
+    assert (tmp_path / "cbig.argv").read_bytes() == first_submission
+    assert len(list(run_root.glob("chain-*"))) == 1
+
+
+def test_launcher_does_not_retry_failed_guard_release_from_exit_trap(
+    cluster_package: dict[str, Path | dict[str, str]], tmp_path: Path
+) -> None:
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    run_root = cluster_package["run_root"]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(run_root, Path)
+    environment = _environment(tmp_path)
+    context = json.loads(environment["FAKE_CONTEXT_JSON"])
+    subject_key = hashlib.sha256(context["subject_output"].encode()).hexdigest()
+    guard = run_root / ".subject-submission-locks" / f"{subject_key}.lock"
+    environment["FAKE_RMDIR_FAIL_ONCE_FOR"] = str(guard)
+    environment["FAKE_RMDIR_FAILURE_STATE"] = str(tmp_path / "rmdir.failed")
+
+    first = _run_launcher(
+        cluster_package,
+        environment,
+        str(subject),
+        str(cluster_config),
+    )
+
+    assert first.returncode == 30
+    assert guard.is_dir()
+    first_submission = (tmp_path / "cbig.argv").read_bytes()
+    environment.pop("FAKE_RMDIR_FAIL_ONCE_FOR")
+    environment.pop("FAKE_RMDIR_FAILURE_STATE")
+    retry = _run_launcher(
+        cluster_package,
+        environment,
+        str(subject),
+        str(cluster_config),
+    )
+    assert retry.returncode == 30
+    assert "subject submission is locked" in retry.stderr.lower()
+    assert (tmp_path / "cbig.argv").read_bytes() == first_submission
+    assert len(list(run_root.glob("chain-*"))) == 1
+
+
+@pytest.mark.parametrize(
     ("group", "successor", "walltime", "memory", "ncpus"),
     [
         ("topup", "eddy", "05:00:00", "24G", "6"),
@@ -936,37 +1157,47 @@ def test_concurrent_successful_workers_contend_on_one_real_successor_lock(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    deadline = time.monotonic() + 10.0
-    while not ready.exists() and first.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.02)
-    if not ready.exists():
-        first_stdout, first_stderr = first.communicate(timeout=5)
-        pytest.fail(
-            f"first worker never entered blocking submitter: "
-            f"rc={first.returncode} stdout={first_stdout!r} stderr={first_stderr!r}"
-        )
+    try:
+        deadline = time.monotonic() + 10.0
+        while (
+            not ready.exists()
+            and first.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        if not ready.exists():
+            pytest.fail(
+                "first worker never entered blocking submitter: "
+                f"rc={first.poll()}"
+            )
 
-    contender = subprocess.run(
-        command,
-        cwd=package,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
-    assert contender.returncode == 30
-    assert "successor submission is locked" in contender.stderr
-    owner = chain_dir / ".eddy.submission.lock" / "owner"
-    owner_text = owner.read_text(encoding="utf-8")
-    assert f"chain_id={chain_dir.name}\n" in owner_text
-    assert "source_group=topup\n" in owner_text
-    assert "successor=eddy\n" in owner_text
-    assert f"job_name=dmri_eddy_{chain_dir.name}\n" in owner_text
-    assert "pid=" in owner_text
-    assert "acquired_utc=" in owner_text
-    release.write_text("release\n", encoding="utf-8")
-    first_stdout, first_stderr = first.communicate(timeout=10)
+        contender = subprocess.run(
+            command,
+            cwd=package,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        assert contender.returncode == 30
+        assert "successor submission is locked" in contender.stderr
+        owner = chain_dir / ".eddy.submission.lock" / "owner"
+        owner_text = owner.read_text(encoding="utf-8")
+        assert f"chain_id={chain_dir.name}\n" in owner_text
+        assert "source_group=topup\n" in owner_text
+        assert "successor=eddy\n" in owner_text
+        assert f"job_name=dmri_eddy_{chain_dir.name}\n" in owner_text
+        assert "host=" in owner_text
+        assert "pid=" in owner_text
+        assert "acquired_utc=" in owner_text
+    finally:
+        release.write_text("release\n", encoding="utf-8")
+        try:
+            first_stdout, first_stderr = first.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first_stdout, first_stderr = first.communicate(timeout=5)
 
     assert first.returncode == 0, (first_stdout, first_stderr)
     assert _nul_arguments(tmp_path / "cbig.argv").count("-cmd") == 1
@@ -1012,9 +1243,9 @@ def test_successor_submission_rejects_nonregular_record_targets_before_scheduler
 @pytest.mark.parametrize(
     ("injected_target", "marker_must_exist", "lock_must_remain"),
     [
-        (Path("submissions/eddy.exit_status"), True, False),
+        (Path("submissions/eddy.exit_status"), True, True),
         (Path("eddy.submitted"), False, True),
-        (Path("status"), True, False),
+        (Path("status"), True, True),
     ],
 )
 def test_successor_submission_propagates_record_failure_after_scheduler_acceptance(
@@ -1208,14 +1439,20 @@ def test_context_preflight_receives_exact_subject_argv_and_software_environment(
 def test_generated_scheduler_command_executes_difficult_valid_paths_exactly(
     cluster_package: dict[str, Path | dict[str, str]], tmp_path: Path
 ) -> None:
+    package = cluster_package["package"]
     subject = cluster_package["subject"]
     cluster_config = cluster_package["cluster_config"]
     software_config = cluster_package["software_config"]
+    assert isinstance(package, Path)
     assert isinstance(subject, Path)
     assert isinstance(cluster_config, Path)
     assert isinstance(software_config, Path)
-    difficult_subject = tmp_path / "subject $literal;quote' config.yaml"
-    difficult_cluster = tmp_path / "cluster $literal;quote' config.sh"
+    injection_sentinel = package / "cluster-command-injected"
+    difficult_subject = (
+        tmp_path
+        / "subject $(touch cluster-command-injected) []$literal;quote'*? config.yaml"
+    )
+    difficult_cluster = tmp_path / "cluster []$literal;quote'*? config.sh"
     subject.rename(difficult_subject)
     cluster_config.rename(difficult_cluster)
     cluster_package["subject"] = difficult_subject
@@ -1240,3 +1477,4 @@ def test_generated_scheduler_command_executes_difficult_valid_paths_exactly(
         str(difficult_subject),
     ]
     assert _nul_arguments(tmp_path / "pipeline.software") == [str(software_config)]
+    assert not injection_sentinel.exists()

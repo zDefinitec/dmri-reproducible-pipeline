@@ -29,6 +29,7 @@ fi
 
 mkdir -p -- "${CLUSTER_RUN_ROOT}"
 CLUSTER_RUN_ROOT=$(CDPATH= cd -- "${CLUSTER_RUN_ROOT}" && pwd -P)
+dmri_acquire_subject_submission_lock "${start_group}"
 attempt=0
 while :; do
     attempt=$((attempt + 1))
@@ -57,14 +58,27 @@ chmod 0444 \
     "${chain_dir}/noddi_workers" \
     "${chain_dir}/start_group" \
     "${chain_dir}/created_at"
+dmri_record_subject_submission_attempt "${chain_id}"
+dmri_require_record_target "${chain_dir}/status"
 
 if dmri_submit_group \
     "${start_group}" "${subject_config}" "${cluster_config}" "${chain_id}" "${chain_dir}"
 then
     dmri_write_record "${chain_dir}/status" "submitted"
+    if ! printf 'Submitted chain %s at %s\n' "${chain_id}" "${chain_dir}"; then
+        dmri_fail "could not report accepted chain submission"
+    fi
+    DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
+    dmri_release_owned_submission_lock \
+        || dmri_fail "could not release owned subject submission lock"
+    trap - EXIT
 else
     submit_status=$?
     dmri_write_record "${chain_dir}/status" "submission_failed"
+    DMRI_RETAIN_OWNED_SUBMISSION_LOCK=0
+    dmri_release_owned_submission_lock \
+        || dmri_fail "could not release owned subject submission lock"
+    trap - EXIT
     exit "${submit_status}"
 fi
-printf 'Submitted chain %s at %s\n' "${chain_id}" "${chain_dir}"
+exit 0
