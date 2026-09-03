@@ -623,3 +623,40 @@ def test_worker_rejects_chain_directories_resolving_outside_run_root(
     assert "cluster_run_root" in result.stderr.lower()
     assert not (tmp_path / "pipeline.argv").exists()
     assert not (tmp_path / "cbig.argv").exists()
+
+
+@pytest.mark.parametrize("group", ["topup", "eddy", "noddi"])
+def test_worker_rejects_mutated_noddi_cpu_request_below_immutable_worker_count(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    group: str,
+) -> None:
+    environment = _environment(tmp_path, workers=3)
+    chain_dir = _launch_chain(cluster_package, tmp_path, environment, group)
+    conda_capture = tmp_path / "conda.argv"
+    context_calls_before_worker = conda_capture.read_bytes()
+    values = cluster_package["values"]
+    cluster_config = cluster_package["cluster_config"]
+    assert isinstance(values, dict)
+    assert isinstance(cluster_config, Path)
+    mutated_values = dict(values)
+    mutated_values["NODDI_NCPUS"] = "2"
+    _write_cluster_config(cluster_config, mutated_values)
+    environment["FAKE_CONTEXT_JSON"] = json.dumps(
+        {
+            "noddi_workers": 1,
+            "subject_id": "MUTATED",
+            "subject_output": "/mutated/output",
+        },
+        sort_keys=True,
+    )
+
+    result = _run_worker(cluster_package, environment, group, chain_dir)
+
+    assert result.returncode != 0
+    assert "noddi_ncpus" in result.stderr.lower()
+    assert "noddi_workers" in result.stderr.lower()
+    assert not (tmp_path / "pipeline.argv").exists()
+    assert not (tmp_path / "cbig.argv").exists()
+    assert conda_capture.read_bytes() == context_calls_before_worker
+    assert not (chain_dir / f"{group}.started_at").exists()

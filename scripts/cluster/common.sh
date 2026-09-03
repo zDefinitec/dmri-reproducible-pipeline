@@ -284,7 +284,8 @@ dmri_resolve_chain_directory() {
 }
 
 dmri_load_chain() {
-    local subject_config=$1 cluster_config=$2 chain_id=$3 stored_subject stored_cluster
+    local subject_config=$1 cluster_config=$2 chain_id=$3
+    local stored_subject stored_cluster immutable_noddi_workers
     dmri_validate_input_paths "${subject_config}" "${cluster_config}"
     dmri_load_cluster_config "${cluster_config}"
     dmri_validate_chain_id "${chain_id}"
@@ -295,16 +296,25 @@ dmri_load_chain() {
     dmri_resolve_chain_directory "chain logs directory" "${CHAIN_DIR}/logs" >/dev/null
     dmri_resolve_chain_directory \
         "chain submissions directory" "${CHAIN_DIR}/submissions" >/dev/null
-    [[ -f "${CHAIN_DIR}/subject_config" && -f "${CHAIN_DIR}/cluster_config" ]] \
+    [[ -f "${CHAIN_DIR}/subject_config" \
+        && -f "${CHAIN_DIR}/cluster_config" \
+        && -f "${CHAIN_DIR}/noddi_workers" ]] \
         || dmri_fail "chain immutable inputs are missing"
     dmri_require_safe_chain_target "${CHAIN_DIR}/subject_config"
     dmri_require_safe_chain_target "${CHAIN_DIR}/cluster_config"
+    dmri_require_safe_chain_target "${CHAIN_DIR}/noddi_workers"
     IFS= read -r stored_subject < "${CHAIN_DIR}/subject_config" || true
     IFS= read -r stored_cluster < "${CHAIN_DIR}/cluster_config" || true
     [[ "${stored_subject}" == "${subject_config}" ]] \
         || dmri_fail "subject configuration does not match immutable chain input"
     [[ "${stored_cluster}" == "${cluster_config}" ]] \
         || dmri_fail "cluster configuration does not match immutable chain input"
+    immutable_noddi_workers=$(< "${CHAIN_DIR}/noddi_workers")
+    dmri_validate_positive_integer \
+        "immutable noddi_workers" "${immutable_noddi_workers}"
+    if (( NODDI_NCPUS < immutable_noddi_workers )); then
+        dmri_fail "NODDI_NCPUS must be at least the immutable noddi_workers"
+    fi
 }
 
 DMRI_OWNED_SUBMISSION_LOCK=""
