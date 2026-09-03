@@ -659,31 +659,10 @@ def merge_noddi(context: NODDIContext) -> NODDIMerge:
     if not np.allclose(error_values, np.rint(error_values), atol=0, rtol=0):
         raise NODDIError("NODDI error-code map must contain integral values")
     success = mask & (error_values == 0)
-    for name in ("NODDI_odi.nii", "NODDI_ficvf.nii", "NODDI_fiso.nii"):
-        values = arrays[name][success]
-        if not np.isfinite(values).all():
-            raise NODDIError(f"{name} must be finite for successful mask voxels")
-        if np.any((values < 0) | (values > 1)):
-            raise NODDIError(f"{name} must be within [0, 1] for successful voxels")
-    for name in (
-        "NODDI_kappa.nii",
-        "NODDI_fmin.nii",
-        "NODDI_fibredirs_xvec.nii",
-        "NODDI_fibredirs_yvec.nii",
-        "NODDI_fibredirs_zvec.nii",
-    ):
-        if not np.isfinite(arrays[name][success]).all():
-            raise NODDIError(f"{name} must be finite for successful mask voxels")
-    fibre_norms = np.sqrt(
-        arrays["NODDI_fibredirs_xvec.nii"][success] ** 2
-        + arrays["NODDI_fibredirs_yvec.nii"][success] ** 2
-        + arrays["NODDI_fibredirs_zvec.nii"][success] ** 2
-    )
-    if np.any(~np.isclose(fibre_norms, 1.0, atol=1e-4, rtol=0)):
-        raise NODDIError(
-            "NODDI fibre directions must have unit length for successful voxels"
-        )
-
+    total = int(np.count_nonzero(mask))
+    success_count = int(np.count_nonzero(success))
+    error_999 = int(np.count_nonzero(mask & (error_values == 999)))
+    other = total - success_count - error_999
     params = context.stage_dir / "NODDI_params.mat"
     if not _safe_regular_file(params):
         raise NODDIError("NODDI parameter MAT file is missing or unsafe")
@@ -708,10 +687,6 @@ def merge_noddi(context: NODDIContext) -> NODDIMerge:
         )
     metrics_path = context.stage_dir / "noddi_metrics.json"
     metrics = _read_json_regular(metrics_path, "NODDI metrics")
-    total = int(np.count_nonzero(mask))
-    success_count = int(np.count_nonzero(mask & (error_values == 0)))
-    error_999 = int(np.count_nonzero(mask & (error_values == 999)))
-    other = total - success_count - error_999
     expected = {
         "total_voxels": total,
         "success_count": success_count,
@@ -725,6 +700,51 @@ def merge_noddi(context: NODDIContext) -> NODDIMerge:
             raise NODDIError(f"NODDI metrics JSON is inconsistent for {key}")
     if success_count + error_999 + other != total or other < 0:
         raise NODDIError("NODDI error counts do not partition the ROI")
+    exception_samples = metrics.get("first_999_exceptions")
+    if not isinstance(exception_samples, list):
+        raise NODDIError(
+            "NODDI metrics JSON is inconsistent for first_999_exceptions"
+        )
+    if len(exception_samples) > workers * 3:
+        raise NODDIError("NODDI metrics JSON contains too many 999 exceptions")
+    if (error_999 == 0) != (len(exception_samples) == 0):
+        raise NODDIError(
+            "NODDI metrics JSON exception samples do not match error_999_count"
+        )
+    samples_by_worker: dict[int, list[int]] = {
+        worker: [] for worker in range(1, workers + 1)
+    }
+    for sample in exception_samples:
+        if not isinstance(sample, dict):
+            raise NODDIError("NODDI metrics JSON contains an invalid 999 exception")
+        worker = sample.get("worker")
+        global_row = sample.get("global_row")
+        if (
+            not isinstance(worker, int)
+            or isinstance(worker, bool)
+            or not 1 <= worker <= workers
+            or not isinstance(global_row, int)
+            or isinstance(global_row, bool)
+            or not 1 <= global_row <= total
+            or any(
+                not isinstance(sample.get(key), str)
+                for key in ("identifier", "message", "report")
+            )
+        ):
+            raise NODDIError("NODDI metrics JSON contains an invalid 999 exception")
+        samples_by_worker[worker].append(global_row)
+    block_size = math.ceil(total / workers)
+    for worker in range(1, workers + 1):
+        start = (worker - 1) * block_size + 1
+        end = min(worker * block_size, total)
+        expected_rows = (
+            np.flatnonzero(mat_errors[start - 1 : end] == 999)[:3] + start
+        ).tolist()
+        if samples_by_worker[worker] != expected_rows:
+            raise NODDIError(
+                "NODDI metrics JSON exceptions do not match each worker's "
+                "first 999 rows"
+            )
     listed = metrics.get("parameter_maps")
     if not isinstance(listed, list) or not set(_REQUIRED_MAPS).issubset(listed):
         raise NODDIError("NODDI metrics JSON parameter map list is incomplete")
@@ -751,6 +771,35 @@ def merge_noddi(context: NODDIContext) -> NODDIMerge:
             float(recorded), float(value), rel_tol=1e-7, abs_tol=1e-12
         ):
             raise NODDIError(f"NODDI metrics JSON is inconsistent for {key}")
+    if success_count == 0:
+        raise NODDIError(
+            "NODDI produced zero successful voxels: "
+            f"total={total}, error_999={error_999}, other_error={other}"
+        )
+    for name in ("NODDI_odi.nii", "NODDI_ficvf.nii", "NODDI_fiso.nii"):
+        values = arrays[name][success]
+        if not np.isfinite(values).all():
+            raise NODDIError(f"{name} must be finite for successful mask voxels")
+        if np.any((values < 0) | (values > 1)):
+            raise NODDIError(f"{name} must be within [0, 1] for successful voxels")
+    for name in (
+        "NODDI_kappa.nii",
+        "NODDI_fmin.nii",
+        "NODDI_fibredirs_xvec.nii",
+        "NODDI_fibredirs_yvec.nii",
+        "NODDI_fibredirs_zvec.nii",
+    ):
+        if not np.isfinite(arrays[name][success]).all():
+            raise NODDIError(f"{name} must be finite for successful mask voxels")
+    fibre_norms = np.sqrt(
+        arrays["NODDI_fibredirs_xvec.nii"][success] ** 2
+        + arrays["NODDI_fibredirs_yvec.nii"][success] ** 2
+        + arrays["NODDI_fibredirs_zvec.nii"][success] ** 2
+    )
+    if np.any(~np.isclose(fibre_norms, 1.0, atol=1e-4, rtol=0)):
+        raise NODDIError(
+            "NODDI fibre directions must have unit length for successful voxels"
+        )
     return NODDIMerge(
         MappingProxyType(maps),
         params,
@@ -1649,6 +1698,7 @@ def _validate_worker_final(
                 "fobj_gs",
                 "fobj_ml",
                 "error_code",
+                "first999Exceptions",
                 "nextRow",
                 "metadata",
             }
