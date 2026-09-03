@@ -138,13 +138,14 @@ def _run_launcher(
     fixture: dict[str, Path | dict[str, str]],
     environment: dict[str, str],
     *arguments: str,
+    working_directory: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     package = fixture["package"]
     assert isinstance(package, Path)
     launcher = package / "scripts" / "cluster" / "submit_subject_chain.sh"
     return subprocess.run(
         [str(launcher), *arguments],
-        cwd=package,
+        cwd=working_directory or package,
         env=environment,
         text=True,
         capture_output=True,
@@ -191,6 +192,8 @@ def _run_worker(
     environment: dict[str, str],
     group: str,
     chain_dir: Path,
+    *,
+    working_directory: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     package = fixture["package"]
     subject = fixture["subject"]
@@ -201,12 +204,56 @@ def _run_worker(
     wrapper = package / "scripts" / "cluster" / f"run_{group}_subject.sh"
     return subprocess.run(
         [str(wrapper), str(subject), str(cluster_config), chain_dir.name],
-        cwd=package,
+        cwd=working_directory or package,
         env=environment,
         text=True,
         capture_output=True,
         check=False,
     )
+
+
+def test_relocated_launcher_and_worker_use_their_physical_repository_root(
+    cluster_package: dict[str, Path | dict[str, str]], tmp_path: Path
+) -> None:
+    """A relocated process must not substitute its caller's working directory."""
+    subject = cluster_package["subject"]
+    cluster_config = cluster_package["cluster_config"]
+    run_root = cluster_package["run_root"]
+    assert isinstance(subject, Path)
+    assert isinstance(cluster_config, Path)
+    assert isinstance(run_root, Path)
+    unrelated_cwd = tmp_path / "unrelated caller directory"
+    unrelated_cwd.mkdir()
+    environment = _environment(tmp_path)
+    environment["FAKE_PIPELINE_STATUS"] = "0"
+
+    launch = _run_launcher(
+        cluster_package,
+        environment,
+        str(subject),
+        str(cluster_config),
+        working_directory=unrelated_cwd,
+    )
+
+    assert launch.returncode == 0, launch.stderr
+    chain_dirs = list(run_root.iterdir())
+    assert len(chain_dirs) == 1
+    chain_dir = chain_dirs[0]
+
+    worker = _run_worker(
+        cluster_package,
+        environment,
+        "topup",
+        chain_dir,
+        working_directory=unrelated_cwd,
+    )
+
+    assert worker.returncode == 0, worker.stderr
+    assert _nul_arguments(tmp_path / "pipeline.argv") == [
+        "--stage-group",
+        "topup",
+        str(subject),
+    ]
 
 
 @pytest.mark.parametrize("relative_argument", ["subject.yaml", "cluster.local.sh"])
