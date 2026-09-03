@@ -424,6 +424,31 @@ def test_run_wrapper_is_relocation_safe_preserves_argv_exit_and_bytecode_setting
     ]
 
 
+@pytest.mark.parametrize(
+    "wrapper",
+    (
+        "scripts/cluster/run_topup_subject.sh",
+        "scripts/cluster/run_eddy_subject.sh",
+        "scripts/cluster/run_noddi_subject.sh",
+        "scripts/cluster/submit_subject_chain.sh",
+    ),
+)
+def test_cluster_wrapper_is_relocation_safe_when_invoked_from_another_directory(
+    tmp_path: Path, wrapper: str
+) -> None:
+    """Cluster entry points locate common.sh from their physical script directory."""
+    result = subprocess.run(
+        [str(PACKAGE_ROOT / wrapper)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 30
+    assert "usage:" in result.stderr.lower()
+
+
 def test_run_wrapper_print_cluster_context_emits_only_json(tmp_path: Path) -> None:
     """The public wrapper keeps its machine-readable context channel clean."""
     fake_bin = tmp_path / "fake-bin"
