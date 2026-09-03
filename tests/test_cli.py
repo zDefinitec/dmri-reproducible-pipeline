@@ -1,15 +1,80 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import dmri_pipeline.cli as cli
 import dmri_pipeline.orchestrator as orchestrator
+from dmri_pipeline.cluster import ClusterConfigError
 from dmri_pipeline.fsl import FSLDiscoveryError
 from dmri_pipeline.noddi import NODDIError
 from dmri_pipeline.orchestrator import PipelineOutcome
 from dmri_pipeline.preprocess import PreprocessError
+
+
+def test_cli_prints_nonmutating_cluster_context(
+    subject_config, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """Cluster context mode emits only wrapper inputs and never runs the pipeline."""
+    configured = replace(
+        subject_config,
+        analysis=replace(subject_config.analysis, noddi_workers=3),
+    )
+    monkeypatch.setattr(cli, "load_config", lambda path: configured)
+
+    def pipeline_must_not_run(*args, **kwargs):
+        raise AssertionError("context mode must not run the pipeline")
+
+    monkeypatch.setattr(cli, "run_pipeline", pipeline_must_not_run)
+
+    assert cli.main(["--print-cluster-context", str(configured.config_path)]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "subject_id": "SYNTH001",
+        "subject_output": str(configured.output_root / "SYNTH001"),
+        "noddi_workers": 3,
+    }
+    assert list(payload) == ["noddi_workers", "subject_id", "subject_output"]
+    assert not configured.subject_output.exists()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--stage-group", "topup", "--print-cluster-context", "subject.yaml"],
+        [
+            "--force-stage",
+            "00_input_audit",
+            "--print-cluster-context",
+            "subject.yaml",
+        ],
+        ["--dry-run", "--print-cluster-context", "subject.yaml"],
+        ["--validate-only", "--print-cluster-context", "subject.yaml"],
+    ],
+)
+def test_cli_rejects_cluster_context_with_execution_modes(arguments, capsys) -> None:
+    """Context printing is standalone so wrappers receive unambiguous values."""
+    assert cli.main(arguments) == 2
+    assert "cannot be combined" in capsys.readouterr().err
+
+
+def test_cli_maps_cluster_context_validation_error_to_exit_2(
+    subject_config, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """Invalid cluster wrapper context is a user configuration error."""
+    monkeypatch.setattr(cli, "load_config", lambda path: subject_config)
+
+    def fail_context(config):
+        raise ClusterConfigError("explicit worker count required")
+
+    monkeypatch.setattr(cli, "cluster_subject_context", fail_context)
+
+    assert cli.main(["--print-cluster-context", str(subject_config.config_path)]) == 2
+    assert "explicit worker count required" in capsys.readouterr().err
 
 
 def test_cli_translates_missing_config_to_exit_2(capsys) -> None:
