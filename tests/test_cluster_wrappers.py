@@ -597,3 +597,29 @@ def test_worker_duplicate_success_does_not_resubmit_successor(
     assert second.returncode == 0, second.stderr
     assert (tmp_path / "cbig.argv").read_bytes() == first_submission
     assert (chain_dir / f"{successor}.submitted").is_file()
+
+
+@pytest.mark.parametrize("replaced_directory", ["chain", "logs", "submissions"])
+def test_worker_rejects_chain_directories_resolving_outside_run_root(
+    cluster_package: dict[str, Path | dict[str, str]],
+    tmp_path: Path,
+    replaced_directory: str,
+) -> None:
+    environment = _environment(tmp_path)
+    environment["FAKE_PIPELINE_STATUS"] = "0"
+    chain_dir = _launch_chain(cluster_package, tmp_path, environment, "topup")
+    if replaced_directory == "chain":
+        replaced_path = chain_dir
+        moved_path = tmp_path / "outside chain"
+    else:
+        replaced_path = chain_dir / replaced_directory
+        moved_path = tmp_path / f"outside {replaced_directory}"
+    replaced_path.rename(moved_path)
+    replaced_path.symlink_to(moved_path, target_is_directory=True)
+
+    result = _run_worker(cluster_package, environment, "topup", chain_dir)
+
+    assert result.returncode != 0
+    assert "cluster_run_root" in result.stderr.lower()
+    assert not (tmp_path / "pipeline.argv").exists()
+    assert not (tmp_path / "cbig.argv").exists()

@@ -213,6 +213,12 @@ dmri_write_record() {
     mv -f -- "${temporary}" "${target}"
 }
 
+dmri_require_safe_chain_target() {
+    local target=$1
+    [[ ! -L "${target}" ]] \
+        || dmri_fail "chain path must resolve below CLUSTER_RUN_ROOT without symbolic links: ${target}"
+}
+
 dmri_submit_group() {
     local group=$1 subject_config=$2 cluster_config=$3 chain_id=$4 chain_dir=$5
     local wrapper command status argument
@@ -230,6 +236,12 @@ dmri_submit_group() {
         -jobout "${chain_dir}/logs/${group}.out"
         -joberr "${chain_dir}/logs/${group}.err"
     )
+    dmri_require_safe_chain_target "${chain_dir}/logs/${group}.out"
+    dmri_require_safe_chain_target "${chain_dir}/logs/${group}.err"
+    dmri_require_safe_chain_target "${chain_dir}/submissions/${group}.argv"
+    dmri_require_safe_chain_target "${chain_dir}/submissions/${group}.stdout"
+    dmri_require_safe_chain_target "${chain_dir}/submissions/${group}.stderr"
+    dmri_require_safe_chain_target "${chain_dir}/submissions/${group}.exit_status"
     : > "${chain_dir}/submissions/${group}.argv"
     for argument in "${submit_arguments[@]}"; do
         printf '%q\n' "${argument}" >> "${chain_dir}/submissions/${group}.argv"
@@ -256,6 +268,21 @@ dmri_validate_chain_id() {
         || dmri_fail "chain ID is not filesystem-safe"
 }
 
+dmri_resolve_chain_directory() {
+    local name=$1 expected=$2 resolved
+    [[ -d "${expected}" ]] || dmri_fail "${name} does not exist: ${expected}"
+    [[ ! -L "${expected}" ]] \
+        || dmri_fail "${name} must resolve below CLUSTER_RUN_ROOT without symbolic links"
+    resolved=$(CDPATH= cd -- "${expected}" && pwd -P)
+    case "${resolved}" in
+        "${CLUSTER_RUN_ROOT}"/*) ;;
+        *) dmri_fail "${name} must resolve below CLUSTER_RUN_ROOT" ;;
+    esac
+    [[ "${resolved}" == "${expected}" ]] \
+        || dmri_fail "${name} must resolve below CLUSTER_RUN_ROOT without symbolic links"
+    printf '%s\n' "${resolved}"
+}
+
 dmri_load_chain() {
     local subject_config=$1 cluster_config=$2 chain_id=$3 stored_subject stored_cluster
     dmri_validate_input_paths "${subject_config}" "${cluster_config}"
@@ -264,9 +291,14 @@ dmri_load_chain() {
     mkdir -p -- "${CLUSTER_RUN_ROOT}"
     CLUSTER_RUN_ROOT=$(CDPATH= cd -- "${CLUSTER_RUN_ROOT}" && pwd -P)
     CHAIN_DIR="${CLUSTER_RUN_ROOT}/${chain_id}"
-    [[ -d "${CHAIN_DIR}" ]] || dmri_fail "chain directory does not exist: ${CHAIN_DIR}"
+    CHAIN_DIR=$(dmri_resolve_chain_directory "chain directory" "${CHAIN_DIR}")
+    dmri_resolve_chain_directory "chain logs directory" "${CHAIN_DIR}/logs" >/dev/null
+    dmri_resolve_chain_directory \
+        "chain submissions directory" "${CHAIN_DIR}/submissions" >/dev/null
     [[ -f "${CHAIN_DIR}/subject_config" && -f "${CHAIN_DIR}/cluster_config" ]] \
         || dmri_fail "chain immutable inputs are missing"
+    dmri_require_safe_chain_target "${CHAIN_DIR}/subject_config"
+    dmri_require_safe_chain_target "${CHAIN_DIR}/cluster_config"
     IFS= read -r stored_subject < "${CHAIN_DIR}/subject_config" || true
     IFS= read -r stored_cluster < "${CHAIN_DIR}/cluster_config" || true
     [[ "${stored_subject}" == "${subject_config}" ]] \
