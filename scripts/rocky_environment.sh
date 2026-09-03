@@ -1,31 +1,44 @@
 #!/usr/bin/env bash
 
-load_software_config() {
-    local config_path=${DMRI_SOFTWARE_CONFIG:-}
+load_private_shell_config_values() {
+    local config_path=$1 path_label=$2 config_label=$3
+    shift 3
+    local required=("$@")
     [[ -n "${config_path}" ]] \
-        || fail "DMRI_SOFTWARE_CONFIG must name the private server software configuration"
+        || fail "${path_label} must name a private shell configuration"
     case "${config_path}" in
         /*) ;;
-        *) fail "DMRI_SOFTWARE_CONFIG must be an absolute path" ;;
+        *) fail "${path_label} must be an absolute path" ;;
     esac
     [[ -f "${config_path}" && ! -L "${config_path}" && -r "${config_path}" ]] \
-        || fail "DMRI_SOFTWARE_CONFIG must be a readable regular file, not a symlink"
+        || fail "${path_label} must be a readable regular file, not a symlink"
     [[ "$(stat -c '%u' "${config_path}")" == "$(id -u)" ]] \
-        || fail "DMRI_SOFTWARE_CONFIG must be owned by the current user"
+        || fail "${path_label} must be owned by the current user"
     local mode
     mode=$(stat -c '%a' "${config_path}")
+    [[ "${mode}" =~ ^[0-7][0-7][0-7][0-7]?$ ]] \
+        || fail "${path_label} returned invalid permission metadata"
     (( (8#${mode} & 8#022) == 0 )) \
-        || fail "DMRI_SOFTWARE_CONFIG must not be group- or world-writable"
+        || fail "${path_label} must not be group- or world-writable"
+    local required_name
+    (( ${#required[@]} > 0 )) \
+        || fail "${config_label} has no fixed import keys"
+    for required_name in "${required[@]}"; do
+        [[ "${required_name}" =~ ^[A-Z][A-Z0-9_]*$ ]] \
+            || fail "${config_label} has an invalid import key"
+    done
+    unset "${required[@]}" \
+        || fail "${config_label} fixed keys could not be reset before import"
     local payload
     if ! payload=$(
         /usr/bin/env -i /bin/bash --noprofile --norc -c '
             set -euo pipefail
             config_path=$1
-            required=(
-                CONDA_EXE FSLDIR MATLAB_EXECUTABLE
-                DMRI_EXPECTED_FSL_VERSION DMRI_EXPECTED_MATLAB_VERSION
-            )
+            shift
+            required=("$@")
             unset "${required[@]}"
+            readonly config_path
+            readonly -a required
             # Config diagnostics remain diagnostics; stdout is reserved for
             # the fixed, validated import protocol below.
             # shellcheck disable=SC1090
@@ -37,25 +50,21 @@ load_software_config() {
                     | /usr/bin/tr -d " \\n"
                 builtin printf "\\n"
             done
-        ' dmri-software-config "${config_path}"
+        ' dmri-private-config "${config_path}" "${required[@]}"
     ); then
-        fail "software configuration could not be loaded"
+        fail "${config_label} could not be loaded"
     fi
 
-    local required=(
-        CONDA_EXE FSLDIR MATLAB_EXECUTABLE
-        DMRI_EXPECTED_FSL_VERSION DMRI_EXPECTED_MATLAB_VERSION
-    )
     local index=0 line name encoded escapes value offset
     while IFS= read -r line; do
         [[ "${index}" -lt "${#required[@]}" ]] \
-            || fail "software configuration returned malformed values"
+            || fail "${config_label} returned malformed values"
         name=${line%%:*}
         encoded=${line#*:}
         [[ "${name}" == "${required[index]}" && "${line}" == *:* ]] \
-            || fail "software configuration returned malformed values"
+            || fail "${config_label} returned malformed values"
         [[ "${encoded}" =~ ^([0-9a-f][0-9a-f])*$ ]] \
-            || fail "software configuration returned malformed values"
+            || fail "${config_label} returned malformed values"
         escapes=
         for ((offset = 0; offset < ${#encoded}; offset += 2)); do
             escapes+="\\x${encoded:offset:2}"
@@ -65,12 +74,26 @@ load_software_config() {
             printf -v value '%b' "${escapes}"
         fi
         [[ -n "${value}" ]] \
-            || fail "software configuration is missing ${name}"
-        export "${name}=${value}"
+            || fail "${config_label} is missing ${name} (required)"
+        printf -v "${name}" '%s' "${value}"
         ((index += 1))
     done <<<"${payload}"
     [[ "${index}" -eq "${#required[@]}" ]] \
-        || fail "software configuration returned malformed values"
+        || fail "${config_label} returned malformed values"
+}
+
+load_software_config() {
+    local config_path=${DMRI_SOFTWARE_CONFIG:-}
+    local required=(
+        CONDA_EXE FSLDIR MATLAB_EXECUTABLE
+        DMRI_EXPECTED_FSL_VERSION DMRI_EXPECTED_MATLAB_VERSION
+    )
+    load_private_shell_config_values \
+        "${config_path}" \
+        "DMRI_SOFTWARE_CONFIG" \
+        "software configuration" \
+        "${required[@]}"
+    export "${required[@]}"
 }
 
 os_release_value() {

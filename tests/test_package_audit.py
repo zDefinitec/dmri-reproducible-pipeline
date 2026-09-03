@@ -19,6 +19,7 @@ OLD_UNLICENSED_ERFI_SHA256 = (
 )
 REQUIRED_DOCUMENTS = (
     "README.md",
+    "docs/CLUSTER.md",
     "docs/INSTALL_ROCKY.md",
     "docs/INPUTS.md",
     "docs/PIPELINE.md",
@@ -110,7 +111,14 @@ def test_exported_package_audit_is_clean_and_contains_only_the_historical_atlas(
     assert audit.cache_files == []
     assert audit.log_files == []
     assert audit.compiled_binaries == []
-    assert audit.executables == ["run_pipeline.sh", "setup_rocky.sh"]
+    assert audit.executables == [
+        "run_pipeline.sh",
+        "scripts/cluster/run_eddy_subject.sh",
+        "scripts/cluster/run_noddi_subject.sh",
+        "scripts/cluster/run_topup_subject.sh",
+        "scripts/cluster/submit_subject_chain.sh",
+        "setup_rocky.sh",
+    ]
     assert audit.sha256_by_path[ATLAS_RELATIVE] == ATLAS_SHA256
     assert audit.files == sorted(audit.files)
 

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Sequence
 
 from .audit import InputAuditError
+from .cluster import ClusterConfigError, cluster_subject_context
 from .config import ConfigError, load_config
 from .fsl import ExternalCommandError, FSLDiscoveryError
 from .models import ModelInputError, ModelOutputError
 from .noddi import MATLABDiscoveryError, NODDIError, NODDIExternalCommandError
 from .orchestrator import (
+    STAGE_GROUPS,
     STAGE_ORDER,
     PipelineDependencyError,
     PipelineExternalError,
@@ -46,7 +49,9 @@ def _parser() -> argparse.ArgumentParser:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--validate-only", action="store_true")
     modes.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--print-cluster-context", action="store_true")
     parser.add_argument("--force-stage", choices=STAGE_ORDER)
+    parser.add_argument("--stage-group", choices=STAGE_GROUPS)
     parser.add_argument("config", nargs=1, metavar="CONFIG.yaml")
     return parser
 
@@ -56,10 +61,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
         namespace = _parser().parse_args(arguments)
+        if namespace.print_cluster_context and (
+            namespace.validate_only
+            or namespace.dry_run
+            or namespace.force_stage is not None
+            or namespace.stage_group is not None
+        ):
+            raise _CLIError(
+                "--print-cluster-context cannot be combined with execution options"
+            )
         if namespace.force_stage is not None and (
             namespace.validate_only or namespace.dry_run
         ):
             raise _CLIError("--force-stage cannot be combined with a nonmutating mode")
+        if namespace.stage_group is not None and namespace.validate_only:
+            raise _CLIError("--stage-group cannot be combined with --validate-only")
+        if (
+            namespace.force_stage is not None
+            and namespace.stage_group is not None
+            and namespace.force_stage not in STAGE_GROUPS[namespace.stage_group]
+        ):
+            raise _CLIError(
+                f"force stage {namespace.force_stage!r} is outside stage group "
+                f"{namespace.stage_group!r}"
+            )
         mode = (
             "validate-only"
             if namespace.validate_only
@@ -68,19 +93,49 @@ def main(argv: Sequence[str] | None = None) -> int:
             else "run"
         )
         config = load_config(Path(namespace.config[0]))
-        outcome = run_pipeline(config, mode, namespace.force_stage)
+        if namespace.print_cluster_context:
+            context = cluster_subject_context(config)
+            print(
+                json.dumps(
+                    {
+                        "subject_id": context.subject_id,
+                        "subject_output": str(context.subject_output),
+                        "noddi_workers": context.noddi_workers,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        outcome = run_pipeline(
+            config,
+            mode=mode,
+            force_stage=namespace.force_stage,
+            stage_group=namespace.stage_group,
+        )
+        group = (
+            f" group={namespace.stage_group}"
+            if namespace.stage_group is not None
+            else ""
+        )
         print(
             f"RESULT subject={outcome.subject} status={outcome.status} "
-            f"output={outcome.subject_output}"
+            f"output={outcome.subject_output}{group}"
         )
         return {
             "COMPLETE": 0,
+            "GROUP_COMPLETE": 0,
             "VALIDATED": 0,
             "DRY_RUN": 0,
             "EXCLUDED": 20,
             "HOLD_FOR_REVIEW": 21,
         }.get(outcome.status, 50)
-    except (_CLIError, ConfigError, InputAuditError, PipelineInputError) as error:
+    except (
+        _CLIError,
+        ClusterConfigError,
+        ConfigError,
+        InputAuditError,
+        PipelineInputError,
+    ) as error:
         return _error(2, error)
     except (
         FSLDiscoveryError,

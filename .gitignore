@@ -1,4 +1,5 @@
 /config/subject.yaml
+/config/cluster.local.sh
 /config/inputs/
 /outputs/
 /.worktrees/

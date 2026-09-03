@@ -14,9 +14,18 @@ fail() {
 source "${SCRIPT_DIR}/scripts/rocky_environment.sh"
 
 _dmri_run_pipeline_main() {
-    local release_file=$1 uname_bin=$2 conda_bin
+    local release_file=$1 uname_bin=$2 conda_bin argument context_mode=0
     shift 2
-    check_rocky_platform "${release_file}" "${uname_bin}"
+    for argument in "$@"; do
+        if [[ "${argument}" == "--print-cluster-context" ]]; then
+            context_mode=1
+        fi
+    done
+    if (( context_mode )); then
+        check_rocky_platform "${release_file}" "${uname_bin}" >/dev/null
+    else
+        check_rocky_platform "${release_file}" "${uname_bin}"
+    fi
     load_software_config
 
     [[ "${CONDA_EXE}" == /* && -x "${CONDA_EXE}" ]] \

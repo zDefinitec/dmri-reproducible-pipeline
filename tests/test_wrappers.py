@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -421,6 +422,77 @@ def test_run_wrapper_is_relocation_safe_preserves_argv_exit_and_bytecode_setting
         "--dry-run",
         config.name,
     ]
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    (
+        "scripts/cluster/run_topup_subject.sh",
+        "scripts/cluster/run_eddy_subject.sh",
+        "scripts/cluster/run_noddi_subject.sh",
+        "scripts/cluster/submit_subject_chain.sh",
+    ),
+)
+def test_cluster_wrapper_is_relocation_safe_when_invoked_from_another_directory(
+    tmp_path: Path, wrapper: str
+) -> None:
+    """Cluster entry points locate common.sh from their physical script directory."""
+    result = subprocess.run(
+        [str(PACKAGE_ROOT / wrapper)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 30
+    assert "usage:" in result.stderr.lower()
+
+
+def test_run_wrapper_print_cluster_context_emits_only_json(tmp_path: Path) -> None:
+    """The public wrapper keeps its machine-readable context channel clean."""
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    conda = fake_bin / "conda"
+    expected = {
+        "noddi_workers": 3,
+        "subject_id": "SYNTH001",
+        "subject_output": "/scratch/outputs/SYNTH001",
+    }
+    conda.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$*\" == \"run -n dmri-repro python -c import sys\" ]]; then\n"
+        "  exit 0\n"
+        "fi\n"
+        "printf '%s\\n' "
+        "'{\"noddi_workers\": 3, \"subject_id\": \"SYNTH001\", "
+        "\"subject_output\": \"/scratch/outputs/SYNTH001\"}'\n",
+        encoding="utf-8",
+    )
+    conda.chmod(0o755)
+    matlab = fake_bin / "matlab"
+    matlab.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    matlab.chmod(0o755)
+    environment = os.environ.copy()
+    _write_linux_uname_and_gnu_stat(fake_bin)
+    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+    environment["DMRI_SOFTWARE_CONFIG"] = str(
+        _write_software_config(
+            tmp_path, conda=conda, fsldir=tmp_path / "fsl", matlab=matlab
+        )
+    )
+    environment["DMRI_OS_RELEASE_FILE"] = str(_write_rocky_release(tmp_path))
+
+    result = _run_internal_wrapper(
+        "run_pipeline.sh",
+        ["--print-cluster-context", "subject.yaml"],
+        cwd=tmp_path,
+        environment=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == expected
+    assert result.stdout == json.dumps(expected, sort_keys=True) + "\n"
 
 
 def test_run_wrapper_returns_dependency_code_when_environment_is_missing(

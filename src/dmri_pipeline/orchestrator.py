@@ -104,6 +104,22 @@ STAGE_ORDER = (
     "qc",
     "report",
 )
+STAGE_GROUPS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "topup": STAGE_ORDER[0:5],
+        "eddy": STAGE_ORDER[5:7],
+        "noddi": STAGE_ORDER[7:15],
+    }
+)
+
+
+def _validate_stage_groups() -> None:
+    grouped = tuple(stage for group in STAGE_GROUPS.values() for stage in group)
+    if grouped != STAGE_ORDER or len(set(grouped)) != len(grouped):
+        raise RuntimeError("stage groups must exactly partition STAGE_ORDER")
+
+
+_validate_stage_groups()
 _CONTINUE_QC = {"INCLUDE", "INCLUDE_WITH_FLAGS", "INCLUDE_AFTER_REVIEW"}
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_ROOT = Path(__file__).resolve().parent
@@ -325,6 +341,7 @@ def run_pipeline(
     config: PipelineConfig,
     mode: str,
     force_stage: str | None = None,
+    stage_group: str | None = None,
 ) -> PipelineOutcome:
     """Validate, describe, or execute one subject pipeline."""
     _require_config(config)
@@ -332,8 +349,20 @@ def run_pipeline(
         raise ValueError("mode must be 'run', 'validate-only', or 'dry-run'")
     if force_stage is not None and force_stage not in STAGE_ORDER:
         raise ValueError(f"unknown force stage: {force_stage}")
+    if stage_group is not None and stage_group not in STAGE_GROUPS:
+        raise ValueError(f"unknown stage group: {stage_group}")
+    if (
+        force_stage is not None
+        and stage_group is not None
+        and force_stage not in STAGE_GROUPS[stage_group]
+    ):
+        raise ValueError(
+            f"force stage {force_stage!r} is outside stage group {stage_group!r}"
+        )
     if mode != "run" and force_stage is not None:
         raise ValueError("--force-stage is valid only for a normal run")
+    if mode == "validate-only" and stage_group is not None:
+        raise ValueError("--stage-group cannot be combined with --validate-only")
 
     _validate_subject_input_separation(config)
     audit = audit_inputs(config)
@@ -350,7 +379,7 @@ def run_pipeline(
             return PipelineOutcome(
                 config.subject_id, "VALIDATED", (), config.subject_output
             )
-        stages = _dry_run(config, audit, plan, runtime)
+        stages = _dry_run(config, audit, plan, runtime, stage_group=stage_group)
         return PipelineOutcome(
             config.subject_id, "DRY_RUN", stages, config.subject_output
         )
@@ -368,6 +397,10 @@ def run_pipeline(
     gate_runner = StageRunner(gate_context)
     outcomes: list[PipelineStageOutcome] = []
     with _SubjectLock(config.subject_output):
+        if stage_group is not None:
+            return _run_stage_group(
+                config, audit, runtime, plan, stage_group, force_stage
+            )
         if force_stage is not None:
             gate_runner.invalidate_from(STAGE_ORDER, force_stage)
         elif _safe_manual_review_transition(config, gate_runner, audit):
@@ -423,6 +456,131 @@ def run_pipeline(
             print(f"[{spec.name}] {outcome.status}")
     return PipelineOutcome(
         config.subject_id, "COMPLETE", tuple(outcomes), config.subject_output
+    )
+
+
+def _run_stage_group(
+    config: PipelineConfig,
+    audit: InputAudit,
+    runtime: _Runtime,
+    initial_plan: Sequence[StageSpec],
+    stage_group: str,
+    force_stage: str | None,
+) -> PipelineOutcome:
+    """Run exactly one ordered group after confirming every prerequisite."""
+    selected_names = STAGE_GROUPS[stage_group]
+    group_start = STAGE_ORDER.index(selected_names[0])
+    group_end = group_start + len(selected_names)
+    gate_runner = StageRunner(
+        StageContext(
+            config=config,
+            package_root=_PACKAGE_ROOT,
+            subject_root=config.subject_output,
+            software=_base_software_provenance(),
+        )
+    )
+    full_runner: StageRunner | None = None
+    plan = initial_plan
+
+    def scientific_runner() -> StageRunner:
+        nonlocal full_runner, plan
+        if full_runner is None:
+            runtime.require_fsl()
+            runtime.require_matlab()
+            plan = _build_plan(config, runtime)
+            _validate_plan_sources(plan)
+            full_runner = StageRunner(
+                StageContext(
+                    config=config,
+                    package_root=_PACKAGE_ROOT,
+                    subject_root=config.subject_output,
+                    software=_software_provenance(runtime),
+                )
+            )
+        return full_runner
+
+    if force_stage is not None:
+        gate_runner.invalidate_from(STAGE_ORDER, force_stage)
+    elif stage_group == "topup" and _safe_manual_review_transition(
+        config, gate_runner, audit
+    ):
+        gate_runner.invalidate_from(STAGE_ORDER, STAGE_ORDER[0])
+
+    for index in range(group_start):
+        runner = gate_runner if index < 2 else scientific_runner()
+        spec = plan[index]
+        if not runner.is_current(spec):
+            raise StageStateError(
+                f"upstream stage {spec.name!r} must be current before "
+                f"running stage group {stage_group!r}"
+            )
+        if spec.name == "00_pre_denoise_motion_qc":
+            decision = _read_qc_decision(runner.final_dir(spec.name))
+            if decision.status == "EXCLUDE":
+                return PipelineOutcome(
+                    config.subject_id, "EXCLUDED", (), config.subject_output
+                )
+            if decision.status == "HOLD_FOR_REVIEW":
+                return PipelineOutcome(
+                    config.subject_id,
+                    "HOLD_FOR_REVIEW",
+                    (),
+                    config.subject_output,
+                )
+            if decision.status not in _CONTINUE_QC:
+                raise StageStateError(
+                    f"unsupported stripe-QC decision: {decision.status}"
+                )
+
+    outcomes: list[PipelineStageOutcome] = []
+
+    def execute_group_specs(
+        runner: StageRunner, specs: Sequence[StageSpec]
+    ) -> PipelineOutcome | None:
+        _reject_unsafe_existing_state(runner, specs)
+        for spec in specs:
+            print(f"[{spec.name}] checking")
+            result = runner.run(spec)
+            outcome = _pipeline_stage_outcome(result)
+            outcomes.append(outcome)
+            print(f"[{spec.name}] {outcome.status}")
+            if spec.name == "00_pre_denoise_motion_qc":
+                decision = _read_qc_decision(result.directory)
+                if decision.status == "EXCLUDE":
+                    return PipelineOutcome(
+                        config.subject_id,
+                        "EXCLUDED",
+                        tuple(outcomes),
+                        config.subject_output,
+                    )
+                if decision.status == "HOLD_FOR_REVIEW":
+                    return PipelineOutcome(
+                        config.subject_id,
+                        "HOLD_FOR_REVIEW",
+                        tuple(outcomes),
+                        config.subject_output,
+                    )
+                if decision.status not in _CONTINUE_QC:
+                    raise StageStateError(
+                        f"unsupported stripe-QC decision: {decision.status}"
+                    )
+        return None
+
+    gate_specs = plan[max(group_start, 0) : min(group_end, 2)]
+    stopped = execute_group_specs(gate_runner, gate_specs)
+    if stopped is not None:
+        return stopped
+    if group_end > 2:
+        runner = scientific_runner()
+        scientific_specs = plan[max(group_start, 2) : group_end]
+        stopped = execute_group_specs(runner, scientific_specs)
+        if stopped is not None:
+            return stopped
+    return PipelineOutcome(
+        config.subject_id,
+        "GROUP_COMPLETE",
+        tuple(outcomes),
+        config.subject_output,
     )
 
 
@@ -2508,6 +2666,7 @@ def _dry_run(
     audit: InputAudit,
     plan: Sequence[StageSpec],
     runtime: _Runtime,
+    stage_group: str | None = None,
 ) -> tuple[PipelineStageOutcome, ...]:
     print(f"subject={config.subject_id}")
     for label, path in (
@@ -2535,7 +2694,21 @@ def _dry_run(
     )
     outcomes: list[PipelineStageOutcome] = []
     upstream_runnable = True
-    for index, spec in enumerate(plan):
+    selected_names = (
+        frozenset(STAGE_GROUPS[stage_group]) if stage_group is not None else None
+    )
+    group_start = (
+        STAGE_ORDER.index(STAGE_GROUPS[stage_group][0])
+        if stage_group is not None
+        else 0
+    )
+    prerequisite_blocker: tuple[str, str] | None = None
+    inspect_end = (
+        STAGE_ORDER.index(STAGE_GROUPS[stage_group][-1]) + 1
+        if stage_group is not None
+        else len(plan)
+    )
+    for index, spec in enumerate(plan[:inspect_end]):
         runner = gate_runner if index < 2 else scientific_runner
         lexical_final = config.subject_output / spec.name
         lexical_work = config.subject_output / ".work" / spec.name
@@ -2572,15 +2745,33 @@ def _dry_run(
             status = "runnable"
         else:
             status = "blocked"
-        print(f"{spec.name}: {status}")
-        outcomes.append(
-            PipelineStageOutcome(
-                spec.name,
-                status,
-                config.subject_output / spec.name,
-                config.subject_output / spec.name / ".stage_complete.json",
+        if (
+            stage_group is not None
+            and index < group_start
+            and status != "current/skipped"
+        ):
+            if prerequisite_blocker is None:
+                reason = (
+                    "stale"
+                    if lexical_final.exists()
+                    or lexical_final.is_symlink()
+                    or lexical_work.exists()
+                    or lexical_work.is_symlink()
+                    else "missing"
+                )
+                prerequisite_blocker = (spec.name, reason)
+                print(f"group prerequisite {spec.name}: {reason}")
+            upstream_runnable = False
+        if selected_names is None or spec.name in selected_names:
+            print(f"{spec.name}: {status}")
+            outcomes.append(
+                PipelineStageOutcome(
+                    spec.name,
+                    status,
+                    config.subject_output / spec.name,
+                    config.subject_output / spec.name / ".stage_complete.json",
+                )
             )
-        )
         if (
             spec.name == "00_pre_denoise_motion_qc"
             and status == "current/skipped"
@@ -2593,7 +2784,14 @@ def _dry_run(
                 raise StageStateError(
                     f"unsupported stripe-QC decision: {decision.status}"
                 )
-    for argv in _dry_run_commands(config, audit, runtime):
+    commands = (
+        (("", argv) for argv in _dry_run_commands(config, audit, runtime))
+        if stage_group is None
+        else _dry_run_stage_commands(
+            config, audit, runtime, stage_group=stage_group
+        )
+    )
+    for _, argv in commands:
         print("ARGV_JSON=" + json.dumps(argv, ensure_ascii=False))
     print("resume=normal invocation resumes exact-current stages")
     print("force=--force-stage NAME archives NAME and every later stage")
@@ -2603,6 +2801,18 @@ def _dry_run(
 def _dry_run_commands(
     config: PipelineConfig, audit: InputAudit, runtime: _Runtime
 ) -> tuple[list[str], ...]:
+    return tuple(
+        command
+        for _, command in _dry_run_stage_commands(config, audit, runtime)
+    )
+
+
+def _dry_run_stage_commands(
+    config: PipelineConfig,
+    audit: InputAudit,
+    runtime: _Runtime,
+    stage_group: str | None = None,
+) -> tuple[tuple[str, list[str]], ...]:
     fsl = runtime.require_fsl()
     root = config.subject_output
     denoise = root / ".work" / "01_denoise"
@@ -2644,7 +2854,9 @@ def _dry_run_commands(
         workers=workers,
     )
     commands = [
-        [
+        (
+            "01_denoise",
+            [
             str(fsl.bet),
             str(denoise / "raw_mean_b0.nii.gz"),
             str(denoise / "raw_mean_b0_bet"),
@@ -2654,20 +2866,28 @@ def _dry_run_commands(
             "-g",
             "0",
             "-m",
-        ],
-        build_topup_command(topup_context),
-        build_topup_mean_command(bet_context),
-        build_bet_command(bet_context),
-        build_eddy_command(eddy_context),
-        build_eddy_quad_command(eddy_context),
-        build_prepare_command(noddi),
+            ],
+        ),
+        ("03_topup", build_topup_command(topup_context)),
+        ("04_bet", build_topup_mean_command(bet_context)),
+        ("04_bet", build_bet_command(bet_context)),
+        ("05_eddy", build_eddy_command(eddy_context)),
+        ("05_eddy", build_eddy_quad_command(eddy_context)),
+        ("08_noddi", build_prepare_command(noddi)),
         *(
-            build_worker_command(noddi, worker, workers)
+            ("08_noddi", build_worker_command(noddi, worker, workers))
             for worker in range(1, workers + 1)
         ),
-        build_merge_command(noddi, workers),
-        *build_jhu_commands(jhu_context),
+        ("08_noddi", build_merge_command(noddi, workers)),
+        *(("09_jhu_48roi", command) for command in build_jhu_commands(jhu_context)),
     ]
+    if stage_group is not None:
+        selected_names = frozenset(STAGE_GROUPS[stage_group])
+        commands = [
+            (stage, command)
+            for stage, command in commands
+            if stage in selected_names
+        ]
     return tuple(commands)
 
 
