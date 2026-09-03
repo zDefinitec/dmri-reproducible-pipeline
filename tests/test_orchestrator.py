@@ -13,6 +13,7 @@ import dmri_pipeline
 import dmri_pipeline.orchestrator as orchestrator
 import dmri_pipeline.stripe_qc as stripe_qc
 from dmri_pipeline.orchestrator import (
+    STAGE_GROUPS,
     STAGE_ORDER,
     PipelineOutcome,
     _SubjectLock,
@@ -54,6 +55,12 @@ EXPECTED_ORDER = (
     "report",
 )
 
+EXPECTED_GROUPS = {
+    "topup": EXPECTED_ORDER[0:5],
+    "eddy": EXPECTED_ORDER[5:7],
+    "noddi": EXPECTED_ORDER[7:15],
+}
+
 
 @pytest.fixture(autouse=True)
 def _isolate_subject_lock_anchor(
@@ -70,6 +77,12 @@ def test_stage_order_is_exact_and_public() -> None:
     assert STAGE_ORDER == EXPECTED_ORDER
     assert dmri_pipeline.STAGE_ORDER == EXPECTED_ORDER
     assert dmri_pipeline.build_plan is build_plan
+
+
+def test_stage_groups_are_exact_exhaustive_and_public() -> None:
+    assert dict(STAGE_GROUPS) == EXPECTED_GROUPS
+    assert tuple(stage for group in STAGE_GROUPS.values() for stage in group) == EXPECTED_ORDER
+    assert dmri_pipeline.STAGE_GROUPS is STAGE_GROUPS
 
 
 def test_build_plan_returns_real_specs_in_exact_order(subject_config) -> None:
@@ -2490,6 +2503,106 @@ def test_fake_normal_run_exact_current_skip_stale_partial_and_force_contracts(
         run_pipeline(subject_config, "run")
 
 
+@pytest.mark.parametrize(
+    ("group", "group_index"),
+    (("topup", 0), ("eddy", 1), ("noddi", 2)),
+)
+def test_fake_group_run_executes_only_its_bounded_stages(
+    subject_config,
+    monkeypatch: pytest.MonkeyPatch,
+    group: str,
+    group_index: int,
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    group_order = ("topup", "eddy", "noddi")
+    for prerequisite in group_order[:group_index]:
+        run_pipeline(subject_config, "run", stage_group=prerequisite)
+    calls.clear()
+
+    outcome = run_pipeline(subject_config, "run", stage_group=group)
+
+    assert outcome.status == "GROUP_COMPLETE"
+    assert calls == list(EXPECTED_GROUPS[group])
+
+
+@pytest.mark.parametrize("group", ("eddy", "noddi"))
+def test_group_run_rejects_absent_upstream_stage_record(
+    subject_config,
+    monkeypatch: pytest.MonkeyPatch,
+    group: str,
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+
+    with pytest.raises(StageStateError, match="upstream.*current|current.*upstream"):
+        run_pipeline(subject_config, "run", stage_group=group)
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("group", "tampered_stage"),
+    (("eddy", "03_topup"), ("noddi", "05_eddy")),
+)
+def test_group_run_rejects_tampered_upstream_stage_record(
+    subject_config,
+    monkeypatch: pytest.MonkeyPatch,
+    group: str,
+    tampered_stage: str,
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    prerequisite = "topup" if group == "eddy" else "eddy"
+    if group == "noddi":
+        run_pipeline(subject_config, "run", stage_group="topup")
+    run_pipeline(subject_config, "run", stage_group=prerequisite)
+    (subject_config.subject_output / tampered_stage / "payload.txt").write_text(
+        "tampered\n", encoding="utf-8"
+    )
+    calls.clear()
+
+    with pytest.raises(StageStateError, match="upstream.*current|current.*upstream"):
+        run_pipeline(subject_config, "run", stage_group=group)
+
+    assert calls == []
+
+
+def test_group_run_leaves_downstream_directories_untouched(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+
+    outcome = run_pipeline(subject_config, "run", stage_group="topup")
+
+    assert outcome.status == "GROUP_COMPLETE"
+    assert all(
+        not (subject_config.subject_output / stage).exists()
+        for stage in EXPECTED_ORDER[5:]
+    )
+
+
+def test_group_force_stage_outside_group_is_rejected_before_invalidation(
+    subject_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    _install_fake_pipeline(monkeypatch, subject_config, "INCLUDE", calls)
+    run_pipeline(subject_config, "run")
+    calls.clear()
+
+    with pytest.raises(ValueError, match="force stage.*stage group|stage group.*force stage"):
+        run_pipeline(
+            subject_config,
+            "run",
+            force_stage="05_eddy",
+            stage_group="topup",
+        )
+
+    assert calls == []
+    assert (subject_config.subject_output / "05_eddy" / "payload.txt").is_file()
+
+
 def test_fake_run_refuses_non_noddi_partial_work(
     subject_config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2621,6 +2734,50 @@ def test_full_dry_run_is_nonmutating_and_reports_sequentially_runnable_plan(
     assert all(status == "runnable" for _, status in outcome.stage_statuses)
     assert calls == []
     assert not subject_config.subject_output.exists()
+
+
+def test_grouped_dry_run_reports_only_eddy_outcomes_and_commands(
+    subject_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    calls: list[str] = []
+    runtime, _ = _fake_runtime(tmp_path, subject_config)
+    monkeypatch.setattr(orchestrator, "_discover_runtime", lambda config: runtime)
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_plan",
+        lambda config, selected_runtime: _simple_plan(config, "INCLUDE", calls),
+    )
+    monkeypatch.setattr(orchestrator, "_software_provenance", lambda runtime: {"full": "1"})
+    monkeypatch.setattr(orchestrator, "_installed_memory_gib", lambda: 64.0)
+    monkeypatch.setattr(
+        orchestrator._Runtime, "require_fsl", lambda self: runtime.fsl
+    )
+    monkeypatch.setattr(
+        orchestrator._Runtime, "require_matlab", lambda self: runtime.matlab
+    )
+    run_pipeline(subject_config, "run", stage_group="topup")
+    before = {path.relative_to(subject_config.subject_output) for path in subject_config.subject_output.rglob("*")}
+    capsys.readouterr()
+
+    outcome = run_pipeline(subject_config, "dry-run", stage_group="eddy")
+
+    assert tuple(stage.stage for stage in outcome.stages) == ("04_bet", "05_eddy")
+    command_lines = [
+        line.removeprefix("ARGV_JSON=")
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("ARGV_JSON=")
+    ]
+    commands = [json.loads(line) for line in command_lines]
+    heads = {Path(command[0]).name for command in commands}
+    assert {"bet", "eddy", "eddy_quad"}.issubset(heads)
+    assert "topup" not in heads
+    assert "flirt" not in heads
+    assert len(commands) == 4
+    after = {path.relative_to(subject_config.subject_output) for path in subject_config.subject_output.rglob("*")}
+    assert after == before
 
 
 def test_dry_run_reports_dangling_final_symlink_as_stale_and_blocks_dependents(

@@ -117,6 +117,7 @@ from .report import (
     write_final_report,
 )
 from .orchestrator import (
+    STAGE_GROUPS,
     STAGE_ORDER,
     PipelineDependencyError,
     PipelineExternalError,
@@ -234,6 +235,7 @@ __all__ = [
     "ReportError",
     "ReportOutputs",
     "write_final_report",
+    "STAGE_GROUPS",
     "STAGE_ORDER",
     "PipelineOutcome",
     "PipelineDependencyError",
